@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# patch-snippet.yml —— 把「受控手」preset 挂进宿主 composition 的最小片段
+#
+# 用法（三条）：
+#   1. 打开你实例的 agent preset 组合文件（宿主的 cordis patch 文件）。
+#   2. 把下面 `- insert:` 整段贴进去（缩进保持 2 空格）。
+#   3. `plugins:` 下面的内容 = `presets/router/agent.cordis.yml` **整体再缩进 4 格**粘进来。
+#      这里只内联了前两条做缩进样例 —— 别只贴这两条，否则 preset 会少一大半工具面。
+#
+# ⚠️ 两份必须同源：目录版 `presets/router/agent.cordis.yml` 与这里内联的 `plugins:` 段
+#    是"同一份东西的两个位置"。改了任何一边都要同步另一边，否则会**静默飘**
+#    （症状：界面里能选到这个 preset，但工具面和你以为的不一样）。
+#    自检思路：分别抽出两边的 `- id:` 行序列做集合比较，不一致就报红。
+#
+# 回滚（整段）：删掉 `- insert:` 整段 + 删掉 preset 目录里的 router 目录，重启一次。
+# 回滚（只撤工具面收紧）：删掉下面 tool-fs 的 config 两行 + 同步目录版，重启一次。
+#
+# 🔴 本片段里不放任何具体 workspace id / 会话 id / 本机路径。若你的组合文件里
+#    紧邻着别的段带 uuid，**那些 uuid 不属于本 preset**，别一起发出去。
+# ─────────────────────────────────────────────────────────────────────────────
+- insert:
+
+    - id: preset-router
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: router
+        name: "Router（受控手）"
+        description: "一个只当总机的预设：判断归属、派给对应主线、一句话报回；按需报状态；不亲自施工。工具面故意收紧（无提问工具、文件只读）。"
+        order: 5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                【身份】你是「受控手」——一个只当总机的主会话：听、判断、派活、报结果，不亲手施工。
+                # ↑ 其余人格行**照 presets/router/agent.cordis.yml 的 prefix 整段抄过来**（这里只留第一行做缩进样例）
+
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+
+          # …以下按 presets/router/agent.cordis.yml 的顺序与缩进**整段**接上：
+          #   tool-bash / tool-pwsh
+          #   tool-fs（config: write:false, edit:false ← 别漏这两个，这是"没有手"的关键）
+          #   tool-fs-search / tool-jobs
+          #   skill-filesystem / tool-skill / tool-web / tool-cordis
+          #   planning(plan-mode) / compaction(compaction-basic, command-compact, tool-result-pruner)
+          #   tool-todo

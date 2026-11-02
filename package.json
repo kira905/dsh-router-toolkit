@@ -1,0 +1,49 @@
+{
+  "name": "@kira905/dsh-router-toolkit",
+  "version": "0.1.0",
+  "description": "Controlled verbs for an orchestrator-style DSH main session: it issues commands but never executes them. A distilled minimal skeleton (message delivery with two gates, three health checks, an agent-preset template). Zero third-party runtime dependencies.",
+  "license": "AGPL-3.0-only",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "dsh-router-act": "router-act.mjs",
+    "dsh-router-guard": "router-guard.mjs",
+    "dsh-router-say": "lib/say.mjs"
+  },
+  "files": [
+    "router-act.mjs",
+    "router-guard.mjs",
+    "lib/",
+    "presets/",
+    "docs/",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "orchestrator",
+    "router",
+    "controlled-verbs",
+    "whitelist",
+    "agent-preset",
+    "dry-run",
+    "audit-log"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kira905/dsh-router-toolkit.git"
+  },
+  "homepage": "https://github.com/kira905/dsh-router-toolkit#readme",
+  "bugs": {
+    "url": "https://github.com/kira905/dsh-router-toolkit/issues"
+  }
+}

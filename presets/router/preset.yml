@@ -1,0 +1,9 @@
+# 一个「只下命令、不亲自施工」的 agent preset 的最小样板。
+# 用法：把本目录放进你的 agent preset 目录（宿主读 preset 的位置），重启一次生效。
+# 三件套：preset.yml（名字/描述/顺序）+ agent.cordis.yml（人格 + 插件声明）+ docs/patch-snippet.yml。
+name: Router（受控手）
+description: >-
+  一个只当"总机"的预设：收一句话 → 判断归哪条线 → 派过去 → 一句话报回；按需报状态；
+  不亲自施工。工具面**故意收紧**：没有提问工具，文件工具只有读（write/edit 用 config 关掉），
+  所有写动作各只有一条腿（投话走 CLI / 唤醒走 CLI / 看板零写入）。
+order: 5

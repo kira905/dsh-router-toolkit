@@ -1,0 +1,15 @@
+node_modules/
+*.log
+*.tmp
+*.bak
+*.bak-*
+.DS_Store
+Thumbs.db
+
+# 运行期产物（本工具跑起来才会有的）
+docs/router-log/
+router-ops.jsonl
+router-state.json
+router-guard-state.json
+router-alert.log
+router-locks/
