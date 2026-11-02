@@ -1,6 +1,6 @@
 {
   "name": "@kira905/dsh-router-toolkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Controlled verbs for an orchestrator-style DSH main session: it issues commands but never executes them. A distilled minimal skeleton (message delivery with two gates, three health checks, an agent-preset template). Zero third-party runtime dependencies.",
   "license": "AGPL-3.0-only",
   "private": false,

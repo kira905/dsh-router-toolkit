@@ -5,6 +5,7 @@
  * 动词白名单（封闭；加一个动词 = 一次改动 + 一次评审）：`status` / `brief` / `card-show` 只读、
  * **零写入**；`say` 投话（**唯一投递腿 = lib/say.mjs**，两闸：不投自己 / 不投已归档）；
  * `digest` / `reset` 只写结论档（幂等追加，reset **不清空任何东西**）；`wake` 是 stub。
+ * 参数同样是白名单（表在 `lib/flags.mjs`）：未知 flag ⇒ rc=2 + 该动词用法，写动词带 `--apply` 也拦。
  * ⇒ 三个写面各只有一条腿，本件**永远不发看板的写请求**（不建卡、不移卡、不验收、不改状态）——
  *   这是"想越界也没手"的机械证明，比人格里写十句禁令都硬。
  *
@@ -24,14 +25,15 @@ import { randomInt } from 'node:crypto';
 import { hostGet, hostRpc } from './lib/host-rpc.mjs';
 import { resolveHome } from './lib/home.mjs';
 import { say as sayViaLib, EXIT as SAY_EXIT } from './lib/say.mjs';
+import { VERB_USAGE, scanFlags, renderUnknownFlags } from './lib/flags.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 const BASE = (process.env.DSH_WEB_URL ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
 const HOME = resolveHome(process.env.ROUTER_HOME);
 const OPS_FILE = process.env.ROUTER_OPS_FILE || path.join(HOME, 'router-ops.jsonl');
 const STATE_FILE = process.env.ROUTER_STATE_FILE || path.join(HOME, 'router-state.json');
-/** 结论档目录：默认 `<cwd>/docs/router-log`（`ROUTER_LOG_DIR` 覆盖） */
-const LOG_DIR = process.env.ROUTER_LOG_DIR || path.join(process.cwd(), 'docs', 'router-log');
+/** 结论档目录：默认 `<cwd>/docs/year-rings`（`ROUTER_LOG_DIR` 覆盖；目录名口径 = 方案 P-3 甲） */
+const LOG_DIR = process.env.ROUTER_LOG_DIR || path.join(process.cwd(), 'docs', 'year-rings');
 const TIMEOUT_MS = Number(process.env.ROUTER_TIMEOUT_MS || 20_000);
 /** 槽位上限（要调就同时调这两个常量与 preset 里那一段） */
 export const SLOT_MAX = 16;
@@ -471,6 +473,7 @@ export const USAGE = `router-act.mjs v${VERSION}（受控手 · 白名单动词 
   say 是**唯一**能打扰别的会话的动词；投递腿只有 lib/say.mjs 一条（两闸：不投自己 / 不投已归档）
   digest / reset 只写结论档；reset **不清空任何东西**（不 compact / 不删会话 / 不归档）
   --json 机器可读 · --max-lines 人类可读的硬上限（status 默认 20；card-show 上限 40）
+  🔴 参数是**白名单**：不认识的 flag ⇒ rc=2 + 打印该动词用法，**一个字节都不写盘**（写动词带 --apply 也拦）
 
 say 选项：--cmd ${CMD_WORDS.join('|')} · --prio ${PRIO_WORDS.join('|')} · --id/--due/--ref/--reply
           --raw（原样投、不套信封）· --mode queue|steer · --decided-by ${DECIDED_BY.join('|')}
@@ -484,8 +487,14 @@ const HANDLERS = { status: cmdStatus, brief: cmdBrief, 'card-show': cmdCardShow,
 export async function main(argv) {
   const verb = argv.find((a) => !a.startsWith('-'));
   const rest = argv.filter((a) => a !== verb);
-  if (!verb || argv.includes('--help') || argv.includes('-h')) { process.stdout.write(`${USAGE}\n`); return verb ? 0 : 2; }
+  if (!verb || argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(`${verb && VERB_USAGE[verb] ? `${VERB_USAGE[verb]}\n\n` : ''}${USAGE}\n`);
+    return verb ? 0 : 2;
+  }
   if (!VERBS.includes(verb)) { process.stderr.write(`❌ 未知动词 "${verb}"。白名单：${VERBS.join(' / ')}\n`); return 2; }
+  // 🔴 参数白名单：未知 flag ⇒ rc=2，且在**任何副作用之前**就拒（写动词带 --apply 也一样拦）
+  const scan = scanFlags(verb, rest);
+  if (scan.unknown.length) { process.stderr.write(`${renderUnknownFlags(verb, scan.unknown, scan.allowed)}\n`); return 2; }
   try { return await HANDLERS[verb](rest, {}); } catch (e) {
     process.stderr.write(`✗ ${verb} 失败：${e?.message ?? e}\n`);
     return 1;

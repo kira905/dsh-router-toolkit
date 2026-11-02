@@ -89,6 +89,15 @@ node router-act.mjs digest --line frontend --text "v0.3 shipped" --ref issues/42
 node router-act.mjs reset --apply
 ```
 
+> The conclusions log lands in **`<working dir>/docs/year-rings/router-<YYYYMM>.md`** (one file per month;
+> `ROUTER_LOG_DIR` overrides the directory). It is a runtime artifact, not part of the package — already
+> covered by `.gitignore`.
+
+**Flags are a whitelist too**: each verb accepts only its own set (the table lives in `lib/flags.mjs`).
+An unrecognised flag ⇒ `rc=2` plus that verb's usage, and **not one byte is written** — write verbs are
+blocked the same way even when `--apply` is present. A typo like `--aply` can never pass as success
+(that is what 0.1.1 fixes: in 0.1.0 unknown flags were silently swallowed and `digest` wrote the log anyway).
+
 ### The two delivery gates
 
 `say` is safe because it blocks **before printing the preview**:

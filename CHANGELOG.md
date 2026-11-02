@@ -4,6 +4,40 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses 0.x semantics
 (minor bumps may break compatibility — see the note below).
 
+## 0.1.1
+
+Small hardening release after the 0.1.0 acceptance run: one correctness fix (unknown flags used to be
+swallowed) and one naming alignment (default conclusions-log directory). No new verbs, no capability
+gained, no npm publish implied by this file — see the release notes for what was actually shipped.
+
+### Fixed
+
+- **Unknown flags are now fail-closed (`R-3`).** Before: `digest --apply --bogus-flag` exited **rc=0
+  and wrote the conclusions log anyway**, because arguments were read lazily (`argvVal` /
+  `argv.includes`) and unrecognised tokens simply fell through. Now each verb has an explicit flag
+  whitelist (`lib/flags.mjs`) checked in `main()` **before any side effect**: an unknown flag ⇒ `rc=2`,
+  the verb's usage line, and **not a single byte written** — write verbs are blocked the same way even
+  with `--apply` present. A typo such as `--aply` can no longer pass as success. The three existing
+  fail-closed paths (unknown verb / missing required argument / out-of-range enum) are unchanged.
+
+### Changed
+
+- **Default conclusions-log directory is now `docs/year-rings/` (`R-4`).** `digest` / `reset` used to
+  write into `docs/router-log/`; the documented design choice is the English directory name, so the
+  default moved to `<working dir>/docs/year-rings/` (`ROUTER_LOG_DIR` still overrides). `.gitignore`,
+  `README.md` and `README.en.md` were updated to match — the old name is gone from code and docs
+  (it survives only in this changelog entry, as history). Anyone who wants the previous location can
+  set `ROUTER_LOG_DIR` (or move the old directory over).
+
+### Added
+
+- **`lib/flags.mjs`** — per-verb allowed-flag table, per-verb usage lines, `scanFlags()`, and the
+  error renderer. Adding a flag is now a one-place change plus a fixture.
+- **Fixture `J-extra4`** in `test/run-self-test.mjs` — asserts that four unknown-flag invocations
+  (`digest --apply`, `say --apply`, read-only `status`, write verb `reset --apply`) plus a realistic
+  `--aply` typo all return `rc=2` with the conclusions-log SHA, the action-log line count and the
+  delivery counter **unchanged**. Suite is now 12 items, all green.
+
 ## 0.1.0
 
 First public release: a distilled minimal skeleton, **not a copy** of any production version

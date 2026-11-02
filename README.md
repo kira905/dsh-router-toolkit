@@ -91,6 +91,13 @@ node router-act.mjs digest --line 前端线 --text "v0.3 发完了" --ref issues
 node router-act.mjs reset --apply
 ```
 
+> 结论档落在 **`<工作目录>/docs/year-rings/router-<YYYYMM>.md`**（按月一档；`ROUTER_LOG_DIR` 可覆盖这个目录）。
+> 它是运行期产物、不随包发布 —— `.gitignore` 已挡住。
+
+**参数也是白名单**：每个动词只认自己那几个参数（表在 `lib/flags.mjs`）。出现不认识的 flag ⇒ `rc=2`，
+并打印该动词用法 —— **一个字节都不写盘**（写动词带 `--apply` 也一样拦）。所以 `--aply` 这类笔误
+不会被当成功（0.1.1 修的正是这个：0.1.0 里未知 flag 被静默吞掉，`digest` 会照写结论档）。
+
 ### 投话的两道闸
 
 `say` 之所以安全，是因为它在**打印预览之前**就拦：

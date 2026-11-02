@@ -7,7 +7,7 @@ node_modules/
 Thumbs.db
 
 # 运行期产物（本工具跑起来才会有的）
-docs/router-log/
+docs/year-rings/
 router-ops.jsonl
 router-state.json
 router-guard-state.json

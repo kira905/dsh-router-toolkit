@@ -27,7 +27,7 @@ import { acquireTickLock, releaseTickLock, writeJsonAtomic, readJsonSafe } from 
 import { readSessionHeader, findSessionFile } from './lib/session-header.mjs';
 import { alert } from './lib/alert.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 const ARGV = process.argv.slice(2);
 const has = (f) => ARGV.includes(f);
 const val = (f, d) => { const i = ARGV.indexOf(f); return i >= 0 ? ARGV[i + 1] : d; };

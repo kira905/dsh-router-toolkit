@@ -16,6 +16,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -332,6 +333,33 @@ async function main() {
     const g = await run('router-guard.mjs', ['--help']);
     const ok = rows.every((x) => x.endsWith(':0')) && g.rc === 0 && opsCount() === nOpsBefore;
     check('J-extra3', '逐动词 --help rc=0 且不写盘', ok, `${rows.join(' ')} · guard:${g.rc} · 流水无新增=${opsCount() === nOpsBefore}`);
+  }
+
+  // ── R-3：未知 flag 一律 fail-closed（写动词带 --apply 也拦）───────────────
+  {
+    const logSnap = () => {
+      if (!fs.existsSync(LOGDIR)) return '[]';
+      return JSON.stringify(fs.readdirSync(LOGDIR).sort().map((f) => {
+        const p = path.join(LOGDIR, f);
+        const buf = fs.statSync(p).isFile() ? fs.readFileSync(p) : Buffer.alloc(0);
+        return [f, createHash('sha256').update(buf).digest('hex').slice(0, 16)];
+      }));
+    };
+    const before = { log: logSnap(), ops: opsCount(), prompts: PROMPTS.length };
+    const dig = await run('router-act.mjs', ['digest', '--line', 'R3夹具线', '--text', '这一行不该落盘', '--apply', '--bogus-flag']);
+    const say = await run('router-act.mjs', ['say', '--to', '前端线', '--text', '这一句不该投出去', '--apply', '--bogus-flag']);
+    const readOnly = await run('router-act.mjs', ['status', '--json', '--bogus-flag']);
+    const reset = await run('router-act.mjs', ['reset', '--apply', '--bogus-flag']);
+    const typo = await run('router-act.mjs', ['digest', '--line', 'R3夹具线', '--text', '笔误 --aply', '--aply']);
+    const after = { log: logSnap(), ops: opsCount(), prompts: PROMPTS.length };
+    const runs = [dig, say, readOnly, reset, typo];
+    const rcAll2 = runs.every((r) => r.rc === 2);
+    const hints = runs.every((r) => /用法：node router-act\.mjs/.test(`${r.out}${r.err}`) && /不认识的参数/.test(r.err));
+    const ok = rcAll2 && hints && before.log === after.log && before.ops === after.ops && before.prompts === after.prompts;
+    check('J-extra4', '未知 flag ⇒ rc=2 且零写入（结论档 sha / 流水 / 真投全不变）', ok,
+      `rc dig=${dig.rc} say=${say.rc} status=${readOnly.rc} reset=${reset.rc} 笔误--aply=${typo.rc}（期望全 2）`
+      + ` · 打印用法=${hints} · 结论档${before.log === after.log ? '未变' : '变了'}`
+      + ` · 流水 ${before.ops}→${after.ops} · 真投增幅=${after.prompts - before.prompts}`);
   }
 
   // ── 汇总 ──────────────────────────────────────────────────────────────────
