@@ -192,6 +192,24 @@ docs/patch-snippet.yml           minimal snippet to mount it into a host composi
 4. Verify: a new session can select the preset, and the tool surface really is tightened (ask it to edit a
    file — it should say it cannot).
 
+**⚠️ Which path actually takes effect (measured on DSH 0.2.1, 2026-11-03)**
+
+Steps 1 and 2 are **two paths**, and **not every path works on every host**:
+
+| Path | How | When it takes effect |
+|---|---|---|
+| **Inline** (step 2) | Paste the `- insert:` block into the host's cordis patch file | **Always** — it goes through the host composition and does not involve the preset directory |
+| **Directory** (step 1) | Drop `presets/router/` into your instance's agent preset directory | **Only if the host composes `@deepseek-ai/dsh-agent-presets`** (the *plural* package, which scans directories). The singular package shipped inside the main package (`dsh-agent-preset-registry`) only accepts definitions passed to `register()` in code — **it does not scan directories** |
+
+⇒ If unsure, **start with the inline path only** (step 2); it does not depend on the directory.
+⇒ Never take "the files are all in the directory" as verification — that only proves you copied them, not
+that the host read them. **Verify exactly two things**: a new session can select the preset; the tool
+surface is really tightened (ask it to edit a file and it says it cannot).
+⇒ And remember the flip side: once the host composes that plural package (or you switch to a main package
+that scans directories), **the directory copy immediately becomes a second source of truth** — from then on
+unsynced copies drift silently (the directory version wins while you think you edited the inline one). So
+keep the same-source discipline below.
+
 **Rolling the whole thing back**
 
 - Delete the `- insert:` block + delete the router preset directory → restart once. Back both files up first.
