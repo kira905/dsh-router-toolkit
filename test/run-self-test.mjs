@@ -79,10 +79,11 @@ function writeWs({ routerFirst = true, archived = [ARCHIVED_SID] } = {}) {
   return doc;
 }
 writeWs();
-// 状态文件：一条未答的拍板请求 + 一条已答的（后者不该被算进「待定」）
+// 状态文件：一条未答的拍板请求 + 一条失败卡派生的拍板请求 + 一条已答的（后者不该被算进「待定」）
 fs.writeFileSync(STATE, `${JSON.stringify({
   attentions: [
     { cardId: 'card-aaaa1111', question: '发布窗口选周三还是周四？', options: ['周三', '周四'], askedAt: '2026-11-01T10:00:00Z' },
+    { cardId: 'card-ffff6666', question: '执行失败（failed）：要不要重试', options: ['重试', '归档', '先放着'], askedAt: '2026-11-01T09:00:00Z' },
     { cardId: 'card-bbbb2222', question: '已答过的', answeredAt: '2026-11-01T11:00:00Z' },
   ],
 }, null, 2)}\n`, 'utf8');
@@ -93,6 +94,7 @@ const BOARD = {
     { id: 'card-aaaa1111', title: '示例：发布脚本版本号核对', status: 'running', line: '前端线', updatedAt: Date.now() - 60_000 },
     { id: 'card-cccc3333', title: '示例：数据导出补字段', status: 'todo', line: '数据线', updatedAt: Date.now() - 3_600_000 },
     { id: 'card-dddd4444', title: '示例：发布线回滚演练', status: 'review', line: '发布线', updatedAt: Date.now() - 7_200_000 },
+    { id: 'card-ffff6666', title: '示例：执行失败的活', status: 'failed', line: '发布线', updatedAt: Date.now() - 900_000 },
     { id: 'card-eeee5555', title: '示例：已完成的活', status: 'done', line: '数据线', updatedAt: Date.now() - 86_400_000 },
   ],
 };
@@ -360,6 +362,80 @@ async function main() {
       `rc dig=${dig.rc} say=${say.rc} status=${readOnly.rc} reset=${reset.rc} 笔误--aply=${typo.rc}（期望全 2）`
       + ` · 打印用法=${hints} · 结论档${before.log === after.log ? '未变' : '变了'}`
       + ` · 流水 ${before.ops}→${after.ops} · 真投增幅=${after.prompts - before.prompts}`);
+  }
+
+  // ── J7 brief 第 3 行：失败卡不上桌（明细只放真等人拍的）──────────────────
+  {
+    const r = await run('router-act.mjs', ['brief', '--json']);
+    let j = null;
+    try { j = JSON.parse(r.out); } catch { /* 下面判 */ }
+    const lines = j?.brief ?? [];
+    const line3 = lines[2] ?? '';
+    const onlyFailedTitle = '示例：执行失败的活';
+    const ok = r.rc === 0 && lines.length === 3
+      && j?.needsOwner?.failedAttentions === 1 && j?.needsOwner?.asks === 1 && j?.needsOwner?.reviews === 1
+      && /要你定/.test(line3) && /其中失败卡 1 件/.test(line3) && !line3.includes(onlyFailedTitle)
+      && !/执行失败/.test(line3);
+    check('J7', 'brief 仍严格三行；失败卡只折叠成计数、不进明细', ok,
+      `rc=${r.rc} · 行数=${lines.length}（期望 3）· needsOwner=${JSON.stringify(j?.needsOwner)} · 明细含失败卡=${line3.includes(onlyFailedTitle)}`);
+  }
+
+  // ── J8 接续头压缩：取料 / 写盘 / 校验 / selftest（一个件四条腿）──────────
+  {
+    const fix = path.join(ROOT, 'headfix');
+    fs.mkdirSync(fix, { recursive: true });
+    const frames = [
+      { type: 'header', data: { id: 'session-headfix-0000', cwd: TARGET } },
+      { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '把发布脚本的版本号改成多少？' }] } },
+      { type: 'assistant/message', data: { role: 'assistant', content: [{ type: 'reasoning', text: '嗯…我得先想一下。'.repeat(20) }, { type: 'text', text: '改成次版本号就行。' }] } },
+    ];
+    fs.writeFileSync(path.join(fix, 'session.v3.jsonl.zstd'), Buffer.concat(frames.map((f) => zlib.zstdCompressSync(Buffer.from(`${JSON.stringify(f)}\n`, 'utf8')))));
+
+    const outDir = path.join(ROOT, 'headout');
+    const gen = await run('lib/router-head.mjs', ['--from-session', fix, '--write', outDir, '--json']);
+    let g = null;
+    try { g = JSON.parse(gen.out); } catch { /* 下面判 */ }
+    const wrote = Boolean(g?.wouldWriteTo) && fs.existsSync(g.wouldWriteTo);
+    const headFile = g?.wouldWriteTo ?? path.join(outDir, 'none.md');
+    const chk = await run('lib/router-head.mjs', ['--check', headFile, '--json']);
+    let c = null;
+    try { c = JSON.parse(chk.out); } catch { /* 下面判 */ }
+    const badFile = path.join(ROOT, 'bad-head.md');
+    fs.writeFileSync(badFile, '# 接续头 · 2026-11-05 00:00\n- 甲：x\n- 乙：y', 'utf8');
+    const bad = await run('lib/router-head.mjs', ['--check', badFile]);
+    const st = await run('lib/router-head.mjs', ['--selftest']);
+    const help = await run('lib/router-head.mjs', ['--help']);
+    const ok = gen.rc === 0 && /^把发布脚本的版本号改成多少/.test(g?.raw?.lastUser ?? '')
+      && wrote && /- 在聊：/.test(g?.head ?? '') && c?.ok === true && chk.rc === 0
+      && bad.rc === 1 && st.rc === 0 && help.rc === 0;
+    check('J8', '接续头：取料→写盘→校验全绿，坏头 rc=1，selftest 全绿', ok,
+      `gen rc=${gen.rc} · 原料=${(g?.raw?.lastUser ?? '').slice(0, 12)}… · 写盘=${wrote} · check rc=${chk.rc} ok=${c?.ok} · 坏头 rc=${bad.rc}（期望 1）· selftest rc=${st.rc} · help rc=${help.rc}`);
+  }
+
+  // ── J9 brief --gaps：愿景缺口另起一段（不占那三行）────────────────────────
+  {
+    const vdir = path.join(ROOT, 'vision');
+    fs.mkdirSync(vdir, { recursive: true });
+    fs.writeFileSync(path.join(vdir, 'line-a.json'), JSON.stringify({
+      line: '发布线',
+      asks: [{ id: 'v1', kind: 'self-todo', what: '把回滚演练补上' }],
+    }), 'utf8');
+    const env = { ROUTER_VISION_DIR: vdir, ROUTER_PRIORITY_FILE: path.join(ROOT, 'no-priority.json') };
+    const r = await run('router-act.mjs', ['brief', '--gaps', '--json'], env);
+    let j = null;
+    try { j = JSON.parse(r.out); } catch { /* 下面判 */ }
+    const lines = j?.brief ?? [];
+    const g0 = (j?.visionGaps ?? [])[0];
+    const ok = r.rc === 0 && lines.length === 5 && /愿景差距（Top-3）：/.test(lines[3] ?? '')
+      && g0?.line === '发布线' && g0?.tier === 'C' && /差：把回滚演练补上/.test(lines[4] ?? '');
+    check('J9', 'brief --gaps 另起一段「愿景差距」，三行车况一字不动', ok,
+      `rc=${r.rc} · 总行数=${lines.length}（期望 5）· gaps=${(j?.visionGaps ?? []).length} · Top1=${g0?.line}/${g0?.tier}`);
+    // 不带 --gaps 时必须仍严格三行（同一份夹具）
+    const plain = await run('router-act.mjs', ['brief', '--json'], env);
+    let p = null;
+    try { p = JSON.parse(plain.out); } catch { /* 下面判 */ }
+    check('J9b', '不带 --gaps ⇒ 严格三行（旧行为不许被新功能撑长）', (p?.brief ?? []).length === 3,
+      `行数=${(p?.brief ?? []).length}（期望 3）`);
   }
 
   // ── 汇总 ──────────────────────────────────────────────────────────────────

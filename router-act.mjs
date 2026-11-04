@@ -14,6 +14,11 @@
  * decidedBy, id?, format?, extra?}`。`decidedBy`：`router` = 本会话自决的小决定 / `owner` = 用户定的。
  * 🔴 只增不改；写失败 ⇒ 告警 + rc≠0，但**不撤销已经真投出去的话**。
  *
+ * 0.2.0 起 `brief` 多了两件事（**仍然只读、仍然三行**）：
+ *   ③ 「要你定」明细 ≤3 条（可配），**执行失败卡只折叠成计数、一条都不进明细** —— 机器该自己重试的事不该占人的注意力；
+ *   加 `--gaps` 时**另起一段**「愿景差距」（各条线声明的目标 vs 看板现状，回答"下一步该推哪条线"），
+ *   不占那三行。阈值（明细条数 / 失败卡判定文案 / 六个权重 / Top-N）全部可配：`env > 配置文件 > 缺省`。
+ *
  * 前置条件：看板状态是插件端点（`GET /api/task-board/state`），**要 /api cookie** ——
  * 给 `DSH_RPC_COOKIE_SECRET`（32 字节 Base64）。不给 ⇒ 403，本件如实打印「状态取不到：<原因>」，
  * **绝不拿上次读数冒充**。
@@ -26,8 +31,10 @@ import { hostGet, hostRpc } from './lib/host-rpc.mjs';
 import { resolveHome } from './lib/home.mjs';
 import { say as sayViaLib, EXIT as SAY_EXIT } from './lib/say.mjs';
 import { VERB_USAGE, scanFlags, renderUnknownFlags } from './lib/flags.mjs';
+import { makeResolver } from './lib/config.mjs';
+import { buildVisionGaps, renderVisionGaps, computeVisionGaps, readOwnerPriorityItems, ownerPriorityHit } from './lib/vision-gaps.mjs';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.2.0';
 const BASE = (process.env.DSH_WEB_URL ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
 const HOME = resolveHome(process.env.ROUTER_HOME);
 const OPS_FILE = process.env.ROUTER_OPS_FILE || path.join(HOME, 'router-ops.jsonl');
@@ -182,16 +189,150 @@ export function pickFocus(rows, open) {
   return cands[0].tier === 0 ? { ...cands[0], why: '在等拍板' } : cands[0];
 }
 
-/** 三行摘要（硬上限 3 行）。 */
-export function renderBrief(board, rows, attn) {
+// ── 第 3 行「要你定」：失败卡不上桌 ─────────────────────────────────────────
+//   两条硬要求（口径写死、可测）：
+//     ① 明细 ≤ askMax 条（缺省 3），超出折叠成计数 —— 不许一屏清单糊住人；
+//     ② 🔴 **执行失败卡不当主项**：那是机器该自己重试/归因的事，不是操作者的板；
+//        它们只进折叠计数（`失败卡 N 件机器自管`），一条都不进明细。
+//   排序：① 真等操作者拍的（attentions 里未答、且不是失败卡派生）② 待验收的卡；
+//         两档内部一律「等得最久的先摆」（稳定排序，同档不改原序）。
+//   ⚠️ 三条判据的**文案与状态名都是可配的**（见 briefOptions()）：我们的看板叫 `failed` /
+//      `重试/归档/先放着`，别人的看板可能叫 `error` / `retry/archive/leave` —— 不许写死在代码里。
+export const BRIEF_DEFAULTS = {
+  askMax: 3,
+  failedStatuses: ['failed'],
+  reviewStatuses: ['review'],
+  // 失败卡派生的问句固定文案：卡被归档/删掉之后看板状态查不到，只剩这条线索
+  failedQuestionPatterns: ['执行失败（failed）', '执行失败(failed)'],
+  // 失败卡的选项组合（建 attention 时固定写的那几个选项）
+  failedOptionSets: [['重试', '归档', '先放着']],
+};
+
+/** 字符串或 RegExp 混着喂都行（配置里是字符串，夹具里常直接给 RegExp）。 */
+function asRegExps(list) {
+  return (Array.isArray(list) ? list : []).flatMap((x) => {
+    if (x instanceof RegExp) return [x];
+    try { return [new RegExp(String(x), 'i')]; } catch { return []; }
+  });
+}
+
+/** `[['a','b'],['x','y']]` 每一组算一个"选项组合" */
+function asOptionSets(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((s) => Array.isArray(s) && s.length)
+    .map((s) => s.map((x) => String(x ?? '').trim()));
+}
+
+/**
+ * 解析第 3 行的口径（**env > 配置 > 缺省**）。
+ * env：`ROUTER_BRIEF_ASK_MAX` · `ROUTER_FAILED_STATUSES` · `ROUTER_REVIEW_STATUSES` ·
+ *      `ROUTER_FAILED_Q_PATTERNS`（逗号分条）· `ROUTER_FAILED_OPTION_SETS`（`;` 分组、`/` 分项）
+ * 配置：`brief.askMax` / `brief.failedStatuses` / `brief.reviewStatuses` /
+ *      `brief.failedQuestionPatterns`（字符串数组）/ `brief.failedOptionSets`（二维数组）
+ */
+export function briefOptions(r = makeResolver()) {
+  const askMax = Math.max(1, r.int('ROUTER_BRIEF_ASK_MAX', 'brief.askMax', BRIEF_DEFAULTS.askMax));
+  const failedStatuses = r.list('ROUTER_FAILED_STATUSES', 'brief.failedStatuses', BRIEF_DEFAULTS.failedStatuses);
+  const reviewStatuses = r.list('ROUTER_REVIEW_STATUSES', 'brief.reviewStatuses', BRIEF_DEFAULTS.reviewStatuses);
+  const questionPatterns = asRegExps(r.list('ROUTER_FAILED_Q_PATTERNS', 'brief.failedQuestionPatterns', BRIEF_DEFAULTS.failedQuestionPatterns));
+
+  const envSets = String(process.env.ROUTER_FAILED_OPTION_SETS ?? '').trim();
+  const cfgSets = r.cfg?.brief?.failedOptionSets;
+  const optionSets = envSets
+    ? envSets.split(';').map((g) => g.split('/').map((x) => x.trim()).filter(Boolean)).filter((g) => g.length)
+    : asOptionSets(Array.isArray(cfgSets) ? cfgSets : BRIEF_DEFAULTS.failedOptionSets);
+
+  return { askMax, failedStatuses, reviewStatuses, questionPatterns, optionSets, warnings: r.warnings };
+}
+
+/**
+ * 这条 attention 是不是「执行失败卡」派生的？
+ * 三条机械判据（任一命中即算 —— 卡可能已被归档/删掉，所以不能只靠看板状态）：
+ *   ① 看板里同 id 的卡 status ∈ failedStatuses；
+ *   ② 问句命中 failedQuestionPatterns；
+ *   ③ 选项恰好等于某一组 failedOptionSets。
+ */
+export function isFailedCardAttention(a, statusById = new Map(), opts = {}) {
+  const statuses = Array.isArray(opts.statuses) ? opts.statuses : BRIEF_DEFAULTS.failedStatuses;
+  const st = statusById.get(String(a?.cardId ?? '')) ?? '';
+  if (st && statuses.map(String).includes(String(st))) return true;
+
+  const pats = asRegExps(opts.questionPatterns ?? BRIEF_DEFAULTS.failedQuestionPatterns);
+  const q = String(a?.question ?? '');
+  if (pats.some((re) => { re.lastIndex = 0; return re.test(q); })) return true;
+
+  const sets = asOptionSets(opts.optionSets ?? BRIEF_DEFAULTS.failedOptionSets);
+  const joined = Array.isArray(a?.options) ? a.options.map((x) => String(x ?? '').trim()).join('/') : '';
+  return !!joined && sets.some((set) => set.join('/') === joined);
+}
+
+/**
+ * 把「要操作者定的事」拆成三份（**纯函数**，夹具直接喂假数据）。
+ * @returns {{asks:Array, reviews:Array, failed:Array, statusById:Map<string,string>}}
+ */
+export function partitionBriefAttn({ open = [], tasks = [], opts = {} } = {}) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const statusById = new Map(list.map((t) => [String(t?.id ?? ''), String(t?.status ?? '')]));
+  const askOpts = {
+    statuses: opts.failedStatuses ?? BRIEF_DEFAULTS.failedStatuses,
+    questionPatterns: opts.questionPatterns ?? BRIEF_DEFAULTS.failedQuestionPatterns,
+    optionSets: opts.optionSets ?? BRIEF_DEFAULTS.failedOptionSets,
+  };
+  const asks = [];
+  const failed = [];
+  for (const a of Array.isArray(open) ? open : []) (isFailedCardAttention(a, statusById, askOpts) ? failed : asks).push(a);
+  const askedAt = (a) => Date.parse(String(a?.askedAt ?? '')) || 0;
+  asks.sort((x, y) => askedAt(x) - askedAt(y));            // 等得最久的先摆
+  const reviewStatuses = (opts.reviewStatuses ?? BRIEF_DEFAULTS.reviewStatuses).map(String);
+  const reviews = list
+    .filter((t) => reviewStatuses.includes(String(t?.status ?? '')))
+    .map((t) => ({ cardId: String(t?.id ?? ''), title: String(t?.title ?? ''), at: Number(t?.updatedAt ?? 0) }))
+    .sort((x, y) => x.at - y.at);                          // 同样：等得最久的先摆
+  return { asks, reviews, failed, statusById };
+}
+
+/** attention 的人读标签：卡名（从看板回查真名）+ 选项；查不到就用问句原文。 */
+export function attentionLabel(a, titleById = new Map()) {
+  const real = titleById.get(String(a?.cardId ?? ''));
+  if (real) {
+    const opts = Array.isArray(a?.options) && a.options.length ? a.options.join('/') : '等你定';
+    return `${real} → ${opts}`;
+  }
+  return String(a?.question ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** 第 3 行渲染（≤askMax 条明细 + 折叠计数）—— 纯函数，夹具可测。 */
+export function renderNeedsOwner(board, attn = {}, opts = {}) {
+  const tasks = board?.tasks ?? [];
+  const askMax = Math.max(1, Number(opts.askMax) || BRIEF_DEFAULTS.askMax);
+  const { asks, reviews, failed } = partitionBriefAttn({ open: attn?.open ?? [], tasks, opts });
+  const titleById = new Map(tasks.map((t) => [String(t?.id ?? ''), String(t?.title ?? '')]));
+  const items = [
+    ...asks.map((a) => clipW(attentionLabel(a, titleById), 34)),
+    ...reviews.map((r) => clipW(`卡「${r.title}」待验收`, 34)),
+  ];
+  const shown = items.slice(0, askMax);
+  const foldedPrimary = items.length - shown.length;
+  const failedN = failed.length;
+  const body = shown.length ? ` ${shown.join(' ② ')}` : ' 0 件';
+  const tail = (foldedPrimary + failedN) > 0
+    ? `（另有 ${foldedPrimary + failedN} 件${failedN ? `：其中失败卡 ${failedN} 件机器自管` : ''}；brief --json 看全量）`
+    : '';
+  return `要你定${body}${tail}`;
+}
+
+/**
+ * 三行摘要（硬上限 3 行）。
+ *   ① 车况一行　② 建议先看哪条　③ 要你定（≤askMax 条明细；失败卡只折叠成计数）
+ * 要「下一步该推哪条线」再看 `brief --gaps`（愿景缺口，另起一段，不占这三行）。
+ */
+export function renderBrief(board, rows, attn, opts = {}) {
   const t = sumOf(rows.filter((r) => activeCount(r) > 0));
   const focus = pickFocus(rows, attn.open);
-  const titleById = new Map((board?.tasks ?? []).map((x) => [String(x?.id ?? ''), String(x?.title ?? '')]));
-  const head = attn.open.slice(0, 2).map((a) => clipW(titleById.get(String(a?.cardId ?? '')) || norm(a?.question), 34));
   return [
     `车况 ${rows.filter((r) => activeCount(r) > 0).length} 线有活 · 跑${t.run} 待${t.todo} 卡${t.review} 败${t.failed} ｜ 待定 ${attn.open.length} 件`,
     focus ? `先看 ${clipW(focus.line, 28)}（${focus.why}，${ago(focus.lastAt)}）` : '先看 — 没有在途活',
-    attn.open.length ? `要你定 ${head.join(' ② ')}${attn.open.length > 2 ? `（+${attn.open.length - 2} 件）` : ''}`.slice(0, 140) : '要你定 0 件',
+    renderNeedsOwner(board, attn, opts),
   ].join('\n');
 }
 
@@ -274,8 +415,26 @@ async function cmdBrief(argv, opts) {
   const board = await fetchBoard(opts);
   const attn = readAttentions();
   const rows = aggregate(board.tasks);
-  const text = renderBrief(board, rows, attn);
-  process.stdout.write(asJson(argv) ? `${JSON.stringify({ at: new Date().toISOString(), version: VERSION, brief: text.split('\n') }, null, 2)}\n` : `${text}\n`);
+  const bopts = briefOptions();
+  const withGaps = argv.includes('--gaps');
+  let text = renderBrief(board, rows, attn, bopts);
+  let vg = null;
+  if (withGaps) {
+    vg = buildVisionGaps({ rows, slots: readSlots(SLOT_MAX), now: Date.now() });
+    text += `\n${renderVisionGaps(vg.gaps, { note: vg.note, top: vg.view.top, textChars: vg.view.textChars })}`;
+  }
+  if (asJson(argv)) {
+    const parts = partitionBriefAttn({ open: attn.open, tasks: board.tasks, opts: bopts });
+    process.stdout.write(`${JSON.stringify({
+      at: new Date().toISOString(),
+      version: VERSION,
+      brief: text.split('\n'),
+      needsOwner: { asks: parts.asks.length, reviews: parts.reviews.length, failedAttentions: parts.failed.length, shownMax: bopts.askMax },
+      ...(vg ? { visionGaps: vg.gaps, visionView: vg.view, visionWarnings: vg.warnings, visionNote: vg.note, visionTotals: vg.idx.totals } : {}),
+    }, null, 2)}\n`);
+    return 0;
+  }
+  process.stdout.write(`${text}\n`);
   return 0;
 }
 
@@ -462,7 +621,7 @@ const VERBS = ['status', 'brief', 'card-show', 'say', 'digest', 'reset', 'wake']
 
 export const USAGE = `router-act.mjs v${VERSION}（受控手 · 白名单动词 · 默认 dry-run）
 
-  node router-act.mjs brief     [--json]                        只读：三行摘要
+  node router-act.mjs brief     [--json] [--gaps]                只读：三行摘要（--gaps 另起一段「愿景差距」）
   node router-act.mjs status    [--json] [--max-lines N]         只读：一屏车况
   node router-act.mjs card-show --card <cardId> [--max-lines N]  只读：一张卡的一句话
   node router-act.mjs say       --to <线名|会话id> --text "<一句话>" [--apply] [选项]
@@ -475,12 +634,23 @@ export const USAGE = `router-act.mjs v${VERSION}（受控手 · 白名单动词 
   --json 机器可读 · --max-lines 人类可读的硬上限（status 默认 20；card-show 上限 40）
   🔴 参数是**白名单**：不认识的 flag ⇒ rc=2 + 打印该动词用法，**一个字节都不写盘**（写动词带 --apply 也拦）
 
+  第 3 行「要你定」：明细 ≤${BRIEF_DEFAULTS.askMax} 条（可配），**执行失败卡只折叠成计数、不进明细**
+  --gaps：另起一段「愿景差距」= 各条线声明的目标 vs 看板现状，回答"下一步该推哪条线"（只读）
+
 say 选项：--cmd ${CMD_WORDS.join('|')} · --prio ${PRIO_WORDS.join('|')} · --id/--due/--ref/--reply
           --raw（原样投、不套信封）· --mode queue|steer · --decided-by ${DECIDED_BY.join('|')}
           --receipt "<对方回话原文>"（不投递，只记账）· --allow-self / --allow-handoff（自测用）
 
 环境：DSH_WEB_URL（默认 http://127.0.0.1:3080）· DSH_RPC_COOKIE_SECRET（看板/RPC 鉴权要它）
-      DSH_HOME · ROUTER_HOME · ROUTER_OPS_FILE · ROUTER_STATE_FILE · ROUTER_LOG_DIR`;
+      DSH_HOME · ROUTER_HOME · ROUTER_OPS_FILE · ROUTER_STATE_FILE · ROUTER_LOG_DIR
+      ROUTER_CONFIG_FILE（配置文件，缺省 <home>/router-config.json）
+
+阈值一律可配（**env > 配置文件 > 缺省**，见 lib/config.mjs）：
+      brief   ROUTER_BRIEF_ASK_MAX · ROUTER_FAILED_STATUSES · ROUTER_REVIEW_STATUSES
+              ROUTER_FAILED_Q_PATTERNS · ROUTER_FAILED_OPTION_SETS
+      愿景     ROUTER_VISION_DIR · ROUTER_PRIORITY_FILE · ROUTER_PRIORITY_KEY · ROUTER_GAP_TOP
+              ROUTER_GAP_TEXT_CHARS · ROUTER_GAP_W_ASKC / _INFLIGHT / _ACTIVITY / _ASKA / _PRIORITY
+              ROUTER_GAP_ACTIVITY_CAP_DAYS`;
 
 const HANDLERS = { status: cmdStatus, brief: cmdBrief, 'card-show': cmdCardShow, say: cmdSay, digest: cmdDigest, reset: cmdReset, wake: cmdWake };
 
@@ -517,3 +687,7 @@ if (isDirectRun()) {
 }
 
 export default { VERSION, USAGE, VERBS, main, fetchBoard, aggregate, readSlots, renderResume };
+
+// 愿景缺口与「操作者优先级」都在 lib/vision-gaps.mjs；这里**再导出一次**，让调用方只有一个入口
+// （纯函数在那边，阈值解析在这条链上 —— 交付报告里那张「内部函数 → 开源实现」对照表按这条找）。
+export { buildVisionGaps, renderVisionGaps, computeVisionGaps, readOwnerPriorityItems, ownerPriorityHit };

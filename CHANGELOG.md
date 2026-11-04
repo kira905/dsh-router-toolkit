@@ -4,6 +4,61 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses 0.x semantics
 (minor bumps may break compatibility — see the note below).
 
+## 0.2.0
+
+Capability release: two new building blocks (vision-gap ranking, hand-off head compression), one shared
+threshold resolver, and a stricter third line in `brief`. **Nothing was removed**: the verb whitelist is
+still seven verbs, the two delivery gates still sit before the preview, and `router-guard.mjs`'s external
+contract (flags, exit codes, four outcomes, idempotency) is untouched — that non-regression is a standing
+acceptance criterion for this line.
+
+### Added
+
+- **`lib/vision-gaps.mjs`** — `brief --gaps` answers "which workstream should move next": one JSON per
+  workstream (`{line, asks:[{id,kind,what}]}`, default dir `<cwd>/docs/vision`), `kind` → tier
+  A/B/C through an overridable map, ranked by `wC·C + wI·inFlight + wD·min(idleDays,cap) + wA·A +
+  wP·priorityHit`. Weights, Top-N, truncation width and the priority-list file/key are all configurable;
+  unmapped kinds count as B **and are named in `warnings`** instead of being silently swallowed. Pure
+  functions + a resolver split, so fixtures can feed explicit weights.
+- **`lib/router-head.mjs`** (bin `dsh-router-head`) — hand-off head compression: `--from-session` picks the
+  last human/assistant turns out of a real session file (multi-frame zstd), `--write` emits a 3–4 line,
+  ≤400 code-point head, `--check` validates one (shape / code points / timestamps / reasoning leakage),
+  `--selftest` ships 29 offline fixtures including **empty input / over-long input / exactly-at-the-limit**.
+  Two design criteria are enforced by fixtures: the summary slot is never faked from an original-sentence
+  prefix, and the original sentence is **dropped rather than truncated** when it does not fit.
+- **`lib/config.mjs`** — the single "env > config file > default" resolver (`<home>/router-config.json`,
+  `ROUTER_CONFIG_FILE` overrides). Missing file = no config; an invalid value falls back to the default and
+  records a warning instead of producing `NaN`; `trace` reports which layer each value came from.
+- **`brief --gaps`** (flag whitelisted like every other flag). `--json` gains `needsOwner{asks, reviews,
+  failedAttentions, shownMax}` and, with `--gaps`, `visionGaps / visionView / visionWarnings / visionTotals`.
+- **`npm test`** — the package finally has a test script:
+  `node test/run-self-test.mjs && node test/run-unit-tests.mjs` (16 CLI items + 25 unit items, all green).
+
+### Changed
+
+- **`brief` line 3 is rendered by `renderNeedsOwner()`**: at most `askMax` (default 3) named items, the rest
+  folded into a count, and **failed-card attention never becomes an item** — it only appears as
+  `其中失败卡 N 件机器自管`. Three mechanical tests (board status / question wording / option set) decide
+  what counts as a failed card, because a card may already be archived when its attention is still open.
+  Ordering is stable: real open decisions first, then cards awaiting review, longest-waiting first.
+- **Every previously hard-coded threshold is now configurable** (`env > config > default`): brief item cap,
+  failed/review status names, failed-card question wording and option sets, vision dir, priority file/key,
+  gap Top-N and width, six scoring weights, head `maxTotal` / `maxTopic`. See the README table.
+- **`presets/router/agent.cordis.yml`** — the persona *skeleton* gained the two new behaviours (brief's
+  third line, `--gaps`, the two kinds of "head") without importing any deployment's wording: it still
+  contains zero private nouns, and states plainly that thresholds live in config, not code.
+
+### Added fixtures
+
+- `test/run-unit-tests.mjs` U0–U24: config precedence and invalid-value fallback, vision scanning (broken
+  JSON, missing fields, unmapped kind), weight-as-parameter, owner-priority matching, brief partitioning and
+  folding, head picking/empty/over-long/boundary cases, injection timestamp stripping, and three negative
+  head shapes.
+- `test/run-self-test.mjs` J7 / J8 / J9 / J9b: `brief` is still exactly three lines and keeps failed cards
+  out of the item list; the head compressor works end to end (pick → write → check → bad head rc=1 →
+  selftest) and `--help` is non-destructive; `brief --gaps` appends its own section while the three status
+  lines stay byte-identical.
+
 ## 0.1.1
 
 Small hardening release after the 0.1.0 acceptance run: one correctness fix (unknown flags used to be

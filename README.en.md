@@ -14,10 +14,12 @@ Three things it is trying to prove:
 2. **One line per action, always attributable.** The action log carries `decidedBy`: was this a small
    call the session made itself, or something the human mandated? The two are recorded separately.
 3. **Context that survives.** One-line slot per workstream + a conclusions log + a manual reset:
-   process never enters the context, status is recomputed on every read.
+   process never enters the context, status is recomputed on every read. For session-to-session hand-off
+   there is also a **hand-off head** (3–4 lines: what was being discussed + one sentence that must not be
+   paraphrased), so the next session does not re-read the whole transcript.
 
 > This is a **minimal distilled rewrite**, not a copy of any production version: the production file of
-> the same name is 1,263 non-blank lines, this one is ~460. The goal is to make the shape legible and
+> the same name is 1,263 non-blank lines, this one is ~700. The goal is to make the shape legible and
 > copy-able, not to drop it straight into production.
 
 ---
@@ -34,6 +36,9 @@ not store your tickets. It reads the state you already have and acts **within bo
 router-act.mjs     controlled verbs (the orchestrator's only action entry)
 router-guard.mjs   three checks (top-of-list repair / archive protection / cwd still exists)
 lib/say.mjs        minimal message delivery (two gates: not self / not archived)
+lib/router-head.mjs hand-off head compressor (last turns + one summary → a 3–4 line head)
+lib/vision-gaps.mjs vision-gap ranking (declared goals vs board reality: "which line moves next")
+lib/config.mjs     threshold resolution (env > config file > default, one place)
 lib/host-rpc.mjs   minimal host RPC client (signs its own /api cookie)
 presets/router/    agent preset template (persona + plugin declarations)
 docs/patch-snippet.yml   minimal snippet to mount it into a host composition
@@ -73,7 +78,7 @@ an empty table.
 | Verb | What it does | Write surface |
 |---|---|---|
 | `status` | One-screen board (per workstream: running / queued / awaiting review / failed + open decisions) | **none** |
-| `brief` | Three-line summary (status line + what to look at first + what needs you) | **none** |
+| `brief` | Three-line summary (status line + what to look at first + what needs you); `--gaps` appends a vision-gap section | **none** |
 | `card-show` | Read one card's one-line summary (including its "awaiting decision" section) | **none** |
 | `say` | Send one line to a named session; dry-run by default | the only delivery leg = `lib/say.mjs` |
 | `digest` | Append one workstream's conclusion to the log (idempotency key = line + date) | one appended line |
@@ -82,6 +87,7 @@ an empty table.
 
 ```bash
 node router-act.mjs brief
+node router-act.mjs brief --gaps        # additionally: "which workstream should move next?"
 node router-act.mjs status --max-lines 30
 node router-act.mjs say --to frontend --text "verify the release script version"            # preview only
 node router-act.mjs say --to frontend --text "verify the release script version" --apply     # actually send
@@ -97,6 +103,45 @@ node router-act.mjs reset --apply
 An unrecognised flag ⇒ `rc=2` plus that verb's usage, and **not one byte is written** — write verbs are
 blocked the same way even when `--apply` is present. A typo like `--aply` can never pass as success
 (that is what 0.1.1 fixes: in 0.1.0 unknown flags were silently swallowed and `digest` wrote the log anyway).
+
+### Line 3, "what needs you": failed cards stay off the table
+
+The third `brief` line only lists what **genuinely needs your decision**:
+
+- at most **3 items** (`ROUTER_BRIEF_ASK_MAX` / `brief.askMax`), the rest folded into a count;
+- **failed-card attention items never appear as items** — retrying/attributing a failed execution is the
+  machine's own job. They only show up as `其中失败卡 N 件机器自管` in the folded count.
+  Three mechanical tests, any of which matches: the board card with the same id is `failed` / the question
+  carries the fixed failure wording / the options are exactly that trio. (After a card is archived the
+  board no longer knows it, which is why one test is not enough.) **All three are configurable** — see the
+  threshold table below.
+- ordering: real open decisions first, then cards awaiting review; inside each tier, longest-waiting first.
+
+### Vision gaps: `brief --gaps`
+
+The three lines answer "what is running now"; `--gaps` answers "**which workstream should move next**",
+as an **extra section after** those three lines:
+
+```bash
+node router-act.mjs brief --gaps          # human
+node router-act.mjs brief --gaps --json   # machine (visionGaps[] / visionView / visionWarnings)
+```
+
+Input: **one JSON per workstream** in a directory (default `<working dir>/docs/vision/`, `ROUTER_VISION_DIR`):
+
+```json
+{ "line": "release", "humanDoc": "docs/release.md",
+  "asks": [ { "id": "a1", "kind": "self-todo", "what": "add the rollback drill" } ] }
+```
+
+- `kind` → tier (**A** = blocked on you / **B** = capability gap / **C** = you can do it yourself) via an
+  overridable map (`vision.kindTiers`; three examples are shipped, and **unmapped kinds count as B and are
+  named in `warnings`** — never silently swallowed).
+- "top ask of a line" = **C > B > A**: only when the whole line has nothing but A does it render as
+  "waiting on you" — work blocked on a human should not steal the "should move" slot.
+- the six weights + Top-N + truncation width are all configurable (next section); ties break on line name,
+  so the order is **reproducible**.
+- read-only: it reads a directory, the board aggregate and an optional owner-priority list. **No writes.**
 
 ### The two delivery gates
 
@@ -122,6 +167,70 @@ print `⚠️ no DSH_SESSION_ID, self-check skipped` and continue. **Never a sil
 
 A third gate ("handed off" titles) is a **deployment-specific convention**, not a general capability ⇒
 opt-in, off by default: `ROUTER_SAY_HANDOFF_GATE=1`.
+
+---
+
+## Hand-off head compression (`lib/router-head.mjs` · bin `dsh-router-head`)
+
+The most expensive step when work moves to a new session is re-reading the transcript just to learn what
+was being discussed. This piece compresses that into a **head**:
+
+```
+# 接续头 · 2026-11-05 09:30
+- 在聊：刚聊到版本号怎么升
+- 原话：（无）
+```
+
+**3–4 lines, ≤400 code points total** (configurable). A new session reads this and continues.
+
+```bash
+node lib/router-head.mjs --from-session <file|dir|sessionId|id-prefix>   # print only, no write
+node lib/router-head.mjs --from-session <...> --write ./heads           # write <dir>/<first 8 of session id>.md
+node lib/router-head.mjs --check ./heads/1a2b3c4d.md                   # validate (rc=1 when it fails)
+node lib/router-head.mjs --selftest                                    # 29 fixtures, offline
+```
+
+Two criteria (this is the design — do not "clean them up" later):
+
+1. **"在聊" is a summary slot, not a prefix of the original sentence.** Test = "if I reword this, does the
+   meaning change?" No ⇒ write a summary; yes ⇒ copy the whole sentence into "原话". Offline (no model) it
+   writes `（离线：需模型判定）` **rather than pretending a prefix is a summary**.
+2. **The "原话" line is never truncated.** If the whole sentence would blow the budget, it is **dropped
+   entirely** (rendered as `（无）`) and `verbatimDropped` is recorded. Half a sentence is neither a summary
+   nor an original — a reader will take it as the original, which is worse than writing nothing.
+
+Three field notes baked into the code: assistant `reasoning` parts **also carry `text`** (filter on
+`part.type === 'text'` or you copy the chain of thought); `user/message` messages are `event.data` itself
+while `assistant/message` uses `event.data.message`; and the injection side must call `forInjection()` to
+strip the timestamp line — otherwise the head changes every turn and prefix caching never hits.
+
+**What it does not do**: no auto-compaction, no session deletion, no archiving (`--write` writes that one
+head file); with no source material it returns `null` and the read side adds nothing at all.
+
+---
+
+## Every threshold is configurable (env > config file > default)
+
+The config file defaults to `<home>/router-config.json` (`ROUTER_CONFIG_FILE` points elsewhere); **absent
+file = no config** — nothing is created and nothing errors. An invalid value **falls back to the default
+and records a warning** instead of returning `NaN`.
+
+| Threshold | Environment variable | Config key | Default |
+|---|---|---|---|
+| "Needs you" item cap | `ROUTER_BRIEF_ASK_MAX` | `brief.askMax` | 3 |
+| Failed-card status names | `ROUTER_FAILED_STATUSES` | `brief.failedStatuses` | `failed` |
+| Failed-card question wording | `ROUTER_FAILED_Q_PATTERNS` | `brief.failedQuestionPatterns` | `执行失败（failed）` (ASCII-paren variant too) |
+| Failed-card option sets | `ROUTER_FAILED_OPTION_SETS` (`;` groups / `/` items) | `brief.failedOptionSets` | `重试/归档/先放着` |
+| Review status names | `ROUTER_REVIEW_STATUSES` | `brief.reviewStatuses` | `review` |
+| Vision directory | `ROUTER_VISION_DIR` | `vision.dir` | `<cwd>/docs/vision` |
+| Priority file / key | `ROUTER_PRIORITY_FILE` / `ROUTER_PRIORITY_KEY` | `vision.priorityFile` / `vision.priorityKey` | `<home>/router-state.json` / `ownerPriority.items` |
+| Vision Top-N / text width | `ROUTER_GAP_TOP` / `ROUTER_GAP_TEXT_CHARS` | `vision.top` / `vision.textChars` | 3 / 40 |
+| Weights: C / in-flight / per-day / cap / A / priority | `ROUTER_GAP_W_ASKC` / `_INFLIGHT` / `_ACTIVITY` / `ROUTER_GAP_ACTIVITY_CAP_DAYS` / `_ASKA` / `_PRIORITY` | `vision.weights.*` | 3 / 2 / 0.5 / 7 / −0.2 / 5 |
+| Head: total / topic code points | `ROUTER_HEAD_MAX_TOTAL` / `ROUTER_HEAD_MAX_TOPIC` | `head.maxTotal` / `head.maxTopic` | 400 / 60 |
+
+> Defaults work out of the box. To change one, change the config — **not the code** (`"changing code" is
+> the most expensive kind of configuration`). `makeResolver().trace` reports, per value, which layer it came
+> from (`env` / `config` / `default`).
 
 ---
 
@@ -230,6 +339,12 @@ compare as sets.
 - **`wake` is a stub**: waking cards inside a thread needs a card-group data plane plus three gates
   (per-message cap / per-card cooldown / one-switch kill). That is a different data contract; this
   skeleton does not pretend to have it. Use `say` for work that has no thread.
+- **The head compresses, it does not judge**: offline there is no model, so the summary slot can only say
+  `（离线：需模型判定）`. Who writes the summary, and how well, is the **write side's** job (host plugin /
+  caller); this piece guarantees material is retrievable, the shape is valid, the size is bounded, and the
+  chain of thought never leaks in.
+- **Vision gaps do not invent goals for you**: it reads the vision files you wrote and ranks them; the
+  goals themselves are yours to write.
 - **The conclusions log only grows**: one file per month, no automatic rotation (auto-truncation loses
   audit trail, contradicting the "one line per action" selling point). Archive by year.
 - **Same line, same day, changed conclusion is skipped by idempotency**: that key is a **dedupe key**, not

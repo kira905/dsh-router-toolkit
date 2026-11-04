@@ -12,9 +12,10 @@
 2. **每个动作留一行，谁拍的都查得到** —— 动作流水里带 `decidedBy`：这个决定是它自己拍的小决定，
    还是人派下来的，分开记。
 3. **上下文不死** —— 一行槽位（每线 1 行）+ 结论档 + 手动重置：过程不进上下文，车况每次现跑。
+   换会话接着干还有一份**接续头**（3~4 行：在聊什么 + 一条不许改写的原话），不用重读全文。
 
 > 这是**提炼重写的最小骨架**，不是任何生产版本的副本：同名生产件 1,263 行（非空），
-> 这里 460 余行。骨架的目标是"让人读懂这套形状并照着改"，不是"拿来直接顶生产"。
+> 这里 700 余行。骨架的目标是"让人读懂这套形状并照着改"，不是"拿来直接顶生产"。
 
 ---
 
@@ -29,6 +30,9 @@
 router-act.mjs     受控动词（受控手唯一的动作入口）
 router-guard.mjs   巡检三项（置顶复位 / 归档保护 / cwd 还在）
 lib/say.mjs        最小投话（两闸：不投自己 / 不投已归档）
+lib/router-head.mjs 接续头压缩（最近三句 + 一句摘要 → 3~4 行的头）
+lib/vision-gaps.mjs 愿景差距排序（各线目标 vs 看板现状，回答"下一步该推哪条"）
+lib/config.mjs     阈值解析（env > 配置文件 > 缺省，一个口）
 lib/host-rpc.mjs   最小宿主 RPC 客户端（自签 /api cookie）
 presets/router/    agent preset 样板（人格 + 插件声明）
 docs/patch-snippet.yml   把它挂进宿主组合的最小片段
@@ -67,7 +71,7 @@ node router-act.mjs status --json     # 读得到看板就说明 cookie 配对�
 | 动词 | 干什么 | 写面 |
 |---|---|---|
 | `status` | 一屏车况（按线聚合：在跑 / 待办 / 等验收 / 失败 + 待拍板件数） | **零写入** |
-| `brief` | 三行摘要（车况一行 + 建议先看哪条 + 要你定的事） | **零写入** |
+| `brief` | 三行摘要（车况一行 + 建议先看哪条 + 要你定的事）；`--gaps` 另起一段「愿景差距」 | **零写入** |
 | `card-show` | 只读一张卡的一句话摘要（含 description 的「待拍板」段） | **零写入** |
 | `say` | 指名投一句话给某个会话；默认 dry-run | 唯一投递腿 = `lib/say.mjs` |
 | `digest` | 把一条线的一句结论追加进结论档（幂等键 = 线名 + 日期） | 结论档追加一行 |
@@ -77,6 +81,7 @@ node router-act.mjs status --json     # 读得到看板就说明 cookie 配对�
 ```bash
 # 只读，随便跑
 node router-act.mjs brief
+node router-act.mjs brief --gaps        # 再问一句"下一步该推哪条线"
 node router-act.mjs status --max-lines 30
 node router-act.mjs card-show --card 3f9a1c2e
 
@@ -97,6 +102,39 @@ node router-act.mjs reset --apply
 **参数也是白名单**：每个动词只认自己那几个参数（表在 `lib/flags.mjs`）。出现不认识的 flag ⇒ `rc=2`，
 并打印该动词用法 —— **一个字节都不写盘**（写动词带 `--apply` 也一样拦）。所以 `--aply` 这类笔误
 不会被当成功（0.1.1 修的正是这个：0.1.0 里未知 flag 被静默吞掉，`digest` 会照写结论档）。
+
+### 第 3 行「要你定」：失败卡不上桌
+
+`brief` 的第 3 行只放**真需要你拍的**：
+
+- 明细 **≤3 条**（`ROUTER_BRIEF_ASK_MAX` / `brief.askMax` 可调），超出折叠成计数 —— 一屏清单糊住人等于没报。
+- **执行失败卡不当主项**：那是机器该自己重试/归因的事，只进折叠计数（`其中失败卡 N 件机器自管`），一条都不进明细。
+  三条判据任一命中即算（看板同 id 的卡是 `failed` / 问句带固定失败文案 / 选项恰为那三个）——
+  卡被归档之后看板状态查不到，所以不能只靠第一条。判据的**文案与状态名都是可配的**（见下节）。
+- 排序：真等拍板的（`attentions[]` 里未答）在前，待验收的卡其次；两档内部一律「等得最久的先摆」。
+
+### 愿景差距：`brief --gaps`
+
+`brief` 那三行回答"现在什么在跑"，`--gaps` 回答"**下一步该推哪条线**"——它在三行之后**另起一段**：
+
+```bash
+node router-act.mjs brief --gaps          # 人读
+node router-act.mjs brief --gaps --json   # 机读（visionGaps[] / visionView / visionWarnings）
+```
+
+数据来源 = 一个目录里**每条线一个 JSON**（缺省 `<工作目录>/docs/vision/`，`ROUTER_VISION_DIR` 可改）：
+
+```json
+{ "line": "发布线", "humanDoc": "docs/发布线.md",
+  "asks": [ { "id": "a1", "kind": "self-todo", "what": "把回滚演练补上" } ] }
+```
+
+- `kind` → 档（**A** = 卡在你手上 / **B** = 能力缺口 / **C** = 你自己就能干）走一张可覆盖的映射表
+  （配置 `vision.kindTiers`；缺省给了三个示例，**未登记的 kind 一律按 B 计并在 `warnings` 里点名**，不许静默吞）。
+- 「该线排第一的 ask」= **C ＞ B ＞ A**：只有整条线只剩 A 时，才印成「等操作者：…」——
+  卡在人手上的事不该抢走"该推"的位置。
+- 排序公式的六个权重 + Top-N + 截断字数全部可配（见下节）；同分按线名排 ⇒ **可复现**，不靠数组顺序碰运气。
+- 只读：读目录、读看板车况、读一张可选的「操作者优先级清单」（命中 +5）。**不写任何文件、不改任何卡**。
 
 ### 投话的两道闸
 
@@ -141,6 +179,66 @@ node router-guard.mjs --router-cwd <...> --json                # 机读
 - **失败即让路**：`workspace.json` 读不到 = 环境没就绪 ⇒ 退出码 **3**（调度侧通常把 3 当"让路"：
   本轮跳过、不算失败）。"有报警"不是脚本失败 ⇒ 仍是 0。
 - 单实例锁：巡检自己抢一把 tick 锁（带 ttl 自愈），手工直跑与定时任务撞车时后来者让路。
+
+---
+
+## 接续头压缩（`lib/router-head.mjs` · bin `dsh-router-head`）
+
+换会话接着干，最贵的一步是"重读全文才知道刚才在聊什么"。这个件把这件事压成一份**头**：
+
+```
+# 接续头 · 2026-11-05 09:30
+- 在聊：刚聊到版本号怎么升
+- 原话：（无）
+```
+
+**3~4 行、整份 ≤400 码点**（可调）。新会话开局读它就够，不必重读全文。
+
+```bash
+node lib/router-head.mjs --from-session <文件|目录|sessionId|id前缀>        # 只打印，不写盘
+node lib/router-head.mjs --from-session <...> --write ./heads              # 写到 <目录>/<会话id前8位>.md
+node lib/router-head.mjs --check ./heads/1a2b3c4d.md                      # 校验（不通过 rc=1）
+node lib/router-head.mjs --selftest                                       # 29 条夹具，不联网
+```
+
+两条判据（这是本件的设计，别改着改着改掉）：
+
+1. **「在聊」是摘要位，不是原话的前缀。** 判据 =「换一种说法，意思变不变？」不变 ⇒ 写摘要；变了 ⇒ 才整句抄进「原话」。
+   离线没有模型就如实写 `（离线：需模型判定）`，**绝不拿原话前缀冒充摘要**。
+2. **「原话」行不许截断。** 整句 + 其余行超预算 ⇒ **整句不录**（写「（无）」），并记 `verbatimDropped`。
+   截一半的句子既不是摘要也不是原话，读的人会当它是原话 —— 比不写更坏。
+
+另外三条实测出来的坑（代码注释里也留着）：
+
+- assistant 消息的 `reasoning` 段**也带 `text`** ⇒ 必须按 `part.type === 'text'` 过滤，否则把思维链抄进文件；
+- `user/message` 的 message 就是 `event.data` 本身，`assistant/message` 才是 `event.data.message`；
+- 注入侧务必用 `forInjection()` 去掉首行时间戳 —— 否则头每轮都变，前缀缓存每轮失效。
+
+**它不做什么**：不自动清空上下文、不删会话、不归档（`--write` 只写那一份头文件）；没有一个原料 ⇒ 返回 `null`，
+读侧一个字都不加（干净启动）。
+
+---
+
+## 阈值全是可配的（env > 配置文件 > 缺省）
+
+配置文件缺省 `<home>/router-config.json`（`ROUTER_CONFIG_FILE` 可指到别处）；**文件不在 = 没配置**，不创建、不报错；
+非法值**回落缺省并打一条 warning**，绝不返回 `NaN` 让下游拿它去比大小。
+
+| 阈值 | 环境变量 | 配置键 | 缺省 |
+|---|---|---|---|
+| 「要你定」明细条数 | `ROUTER_BRIEF_ASK_MAX` | `brief.askMax` | 3 |
+| 失败卡：状态名 | `ROUTER_FAILED_STATUSES` | `brief.failedStatuses` | `failed` |
+| 失败卡：问句文案 | `ROUTER_FAILED_Q_PATTERNS` | `brief.failedQuestionPatterns` | `执行失败（failed）`（半角括号变体也算） |
+| 失败卡：选项组合 | `ROUTER_FAILED_OPTION_SETS`（`;` 分组 / `/` 分项） | `brief.failedOptionSets` | `重试/归档/先放着` |
+| 待验收：状态名 | `ROUTER_REVIEW_STATUSES` | `brief.reviewStatuses` | `review` |
+| 愿景目录 | `ROUTER_VISION_DIR` | `vision.dir` | `<工作目录>/docs/vision` |
+| 优先级清单文件 / 字段 | `ROUTER_PRIORITY_FILE` / `ROUTER_PRIORITY_KEY` | `vision.priorityFile` / `vision.priorityKey` | `<home>/router-state.json` / `ownerPriority.items` |
+| 愿景差距 Top-N / 截断字数 | `ROUTER_GAP_TOP` / `ROUTER_GAP_TEXT_CHARS` | `vision.top` / `vision.textChars` | 3 / 40 |
+| 权重：C 类 / 在途 / 每天 / 封顶 / A 类 / 优先级 | `ROUTER_GAP_W_ASKC` / `_INFLIGHT` / `_ACTIVITY` / `ROUTER_GAP_ACTIVITY_CAP_DAYS` / `_ASKA` / `_PRIORITY` | `vision.weights.*` | 3 / 2 / 0.5 / 7 / −0.2 / 5 |
+| 接续头：整份码点 / 「在聊」码点 | `ROUTER_HEAD_MAX_TOTAL` / `ROUTER_HEAD_MAX_TOPIC` | `head.maxTotal` / `head.maxTopic` | 400 / 60 |
+
+> 不给就用缺省 —— 开箱即用。要改就改配置，**别改代码**（"改代码"是最贵的一种配置）。
+> 每个值取自哪一层，`makeResolver().trace` 会逐条告诉你（`env` / `config` / `default`）。
 
 ---
 
@@ -223,6 +321,9 @@ docs/patch-snippet.yml           把它挂进宿主 composition 的最小片段
 
 - **`wake` 是 stub**：按 thread 唤醒卡片依赖看板侧的卡片分组数据 + 三道闸（单条上限 / 冷却 / 一键关），
   那是另一套数据契约，本骨架不假装自己有。没有 thread 的活请改用 `say`。
+- **接续头只压不判**：离线器具没有模型 ⇒「在聊」只能写 `（离线：需模型判定）`。摘要要谁来写、写得好不好，
+  是**写侧**（宿主插件 / 调用方）的事；本件保证的是"取得到原料、形态合法、体积可控、不抄思维链"。
+- **愿景缺口不替你算目标**：它只读你写好的愿景件并排序；愿景件本身（这条线要往哪走）得你自己写。
 - **结论档只增不减**：按月开档、不自动轮转（自动截断 = 丢审计，与"每个动作留一行"的卖点自相矛盾）。
   按年手工归档即可。
 - **同日同一条线改结论会被幂等跳过**：幂等键是**去重键**，不是"更新键"。要改就手工改档。
