@@ -21,13 +21,16 @@ Three things it is trying to prove:
 > This is a **minimal distilled rewrite**, not a copy of any production version: the production file of
 > the same name is 2,525 non-blank lines, this one is ~1,150. The goal is to make the shape legible and
 > copy-able, not to drop it straight into production.
+>
+> 0.4.0 adds three surfaces that were already running upstream but were never in this repo
+> (`router-lazy` / `yearring-index` / the optional plugin); they are not part of those 2,525 lines.
 
 ---
 
 ## What it is / is not
 
-**Is**: a CLI (controlled verbs + a health check) plus an agent preset template. Zero third-party
-dependencies — Node built-ins only.
+**Is**: a CLI (controlled verbs + a health check + two read-only inspectors) plus an agent preset
+template plus an **optional** web plugin. Zero third-party dependencies — Node built-ins only.
 
 **Is not**: a framework, a service, a board, or a scheduler. It does not schedule work for you and does
 not store your tickets. It reads the state you already have and acts **within bounds**.
@@ -38,6 +41,9 @@ router-guard.mjs   three checks (top-of-list repair / archive protection / cwd s
 lib/say.mjs        minimal message delivery (two gates: not self / not archived)
 lib/router-head.mjs hand-off head compressor (last turns + one summary → a 3–4 line head)
 lib/vision-gaps.mjs vision-gap ranking (declared goals vs board reality: "which line moves next")
+router-lazy.mjs    four-bucket "is this workstream idle" judgement (read-only; who to nudge, about what)
+yearring-index.mjs vision-directory index (one row per line: ask counts by tier + the top ask)
+plugin/            optional web plugin ("wrap up and compact" button: persist first, then compact)
 lib/config.mjs     threshold resolution (env > config file > default, one place)
 lib/host-rpc.mjs   minimal host RPC client (signs its own /api cookie)
 presets/router/    agent preset template (persona + plugin declarations)
@@ -247,6 +253,68 @@ strip the timestamp line — otherwise the head changes every turn and prefix ca
 
 **What it does not do**: no auto-compaction, no session deletion, no archiving (`--write` writes that one
 head file); with no source material it returns `null` and the read side adds nothing at all.
+
+---
+
+## Is this workstream idle, and what should be nudged (`router-lazy.mjs` · bin `dsh-router-lazy`)
+
+`brief` counts idle days; it cannot tell you *who* should be pushed or *about what*. This command puts the
+session list, the board and the relay ledger side by side and prints "who to nudge". Four buckets — **do
+not mix them up**, mixing them produces wrong nudges:
+
+| bucket | when | what to do |
+|---|---|---|
+| `lazy` | not running, but the line has a `todo` card / an unfinished hand-off / the title says "to be continued" | nudge: message it about those cards |
+| `backlog` | not running, the line only has `backlog` cards | nudge **planning**, not running: move them to `todo` or say why not |
+| `handoff` | the title says "handed off" and work remains | don't message that session (a hand-off gate refuses it): start a new one, or message the successor |
+| `stuck` | idle past the threshold, yet the line still has `running` / `review` cards | the cards are running but the session is dead: verify it is really dead, then re-run or re-route |
+
+A **"nudged N times today"** column counts real `say`/`wake` on the local day from
+`<home>/router-ops.jsonl` (dry-runs, failures and other verbs do not count). A line nudged three times
+today and still idle should be escalated to a human, not nudged a fourth time.
+
+`rc=3` on any fetch failure — session list, board or ledger — and **not one word** suggesting "nobody is
+slacking". Workstream names are injectable (`analyze({ resolveLine })`), board headers come from
+`ROUTER_BOARD_HEADERS` (JSON object, empty by default — the code names no private header).
+
+```bash
+node router-lazy.mjs --selftest     # 32 offline assertions, no production, no network
+```
+
+---
+
+## Vision-directory index (`yearring-index.mjs` · bin `dsh-router-yearring`)
+
+One JSON per workstream (`{ line, humanDoc, asks: [{ id, kind, what }] }`) in one directory → one row per
+line: A/B/C ask counts, the top-ranked ask, whether the human doc exists, and the JSON status.
+`kind` → tier: `blocked-by-owner` ⇒ A (waiting on the operator: listed, not pushed), `capability-gap` ⇒ B,
+`self-todo` ⇒ C (do it yourself: push this first); unknown kinds count as B **and** are named.
+
+Strictly read-only: broken JSON / missing fields / missing directory all **report yellow with `rc=0`** —
+one bad file must not take down the index. Directory: `--dir` > `ROUTER_VISION_DIR` > config
+`vision.dir` > `<cwd>/docs/vision` (the same ladder as `brief --gaps`).
+
+---
+
+## Optional plugin: wrap-up-and-compact button (`plugin/`)
+
+An input-toolbar button for Router sessions. One click, two steps, **order matters**:
+
+1. `router-act reset --apply` — persist slots and open decisions into the conclusions log (**this step is
+   the safety net**: persist before clearing).
+2. `compaction.compactNow()` — compact in place; the session id does not change.
+
+Failure semantics are hard-coded: reset failure ⇒ **never compacts**; compaction failure / no compaction
+service / nothing to compact ⇒ "⚠️ already persisted, but did not compact (why)", never success.
+Human-triggered only (no timer, no subscription), non-Router sessions refused with a plain-language reason.
+
+```bash
+npm i @kira905/dsh-router-toolkit      # CLIs land in bin; the plugin loads via dsh.bundle.patch
+```
+
+`router-act.mjs` resolution: `DSH_ROUTER_ACT` > beside the package > `<home>/tools/dsh-butler/`.
+The route prefix is configurable (`routePrefix`); the client half reads
+`window.__DSH_ROUTER_RESET_PREFIX__`, so keep the two in sync (or leave both at the default).
 
 ---
 

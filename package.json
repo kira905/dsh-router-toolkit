@@ -1,7 +1,7 @@
 {
   "name": "@kira905/dsh-router-toolkit",
-  "version": "0.3.0",
-  "description": "Controlled verbs for an orchestrator-style DSH main session: it issues commands but never executes them. A distilled minimal skeleton (message delivery with two gates, three health checks, an agent-preset template, vision-gap ranking, a hand-off header compressor, an optional vision pointer on digest rows, a mechanical per-workstream digest, and stale-attention bookkeeping that fails open). Zero third-party runtime dependencies.",
+  "version": "0.4.0",
+  "description": "Controlled verbs for an orchestrator-style DSH main session: it issues commands but never executes them. A distilled minimal skeleton (message delivery with two gates, three health checks, an agent-preset template, vision-gap ranking, a hand-off header compressor, an optional vision pointer on digest rows, a mechanical per-workstream digest, stale-attention bookkeeping that fails open, a four-bucket \"is this workstream idle\" judgement, a vision-directory index, and an optional web plugin for an explicit wrap-up-and-compact button). Zero third-party runtime dependencies.",
   "license": "AGPL-3.0-only",
   "private": false,
   "publishConfig": {
@@ -12,17 +12,22 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/run-self-test.mjs && node test/run-unit-tests.mjs && node test/test-router-act.mjs"
+    "test": "node test/run-self-test.mjs && node test/run-unit-tests.mjs && node test/test-router-act.mjs && node test/test-yearring-index.mjs && node test/test-router-reset-plugin.mjs && node router-lazy.mjs --selftest"
   },
   "bin": {
     "dsh-router-act": "router-act.mjs",
     "dsh-router-guard": "router-guard.mjs",
     "dsh-router-say": "lib/say.mjs",
-    "dsh-router-head": "lib/router-head.mjs"
+    "dsh-router-head": "lib/router-head.mjs",
+    "dsh-router-lazy": "router-lazy.mjs",
+    "dsh-router-yearring": "yearring-index.mjs"
   },
   "files": [
     "router-act.mjs",
     "router-guard.mjs",
+    "router-lazy.mjs",
+    "yearring-index.mjs",
+    "plugin/",
     "lib/",
     "presets/",
     "docs/",
@@ -40,7 +45,11 @@
     "whitelist",
     "agent-preset",
     "dry-run",
-    "audit-log"
+    "audit-log",
+    "idle-detection",
+    "vision-index",
+    "compaction",
+    "dsh-plugin"
   ],
   "repository": {
     "type": "git",
@@ -49,5 +58,26 @@
   "homepage": "https://github.com/kira905/dsh-router-toolkit#readme",
   "bugs": {
     "url": "https://github.com/kira905/dsh-router-toolkit/issues"
+  },
+  "exports": {
+    ".": "./plugin/index.js",
+    "./plugin": "./plugin/index.js",
+    "./client": "./plugin/client.js",
+    "./router-act": "./router-act.mjs",
+    "./router-lazy": "./router-lazy.mjs",
+    "./yearring-index": "./yearring-index.mjs",
+    "./lib/*": "./lib/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./plugin/cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
   }
 }

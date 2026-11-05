@@ -16,12 +16,15 @@
 
 > 这是**提炼重写的最小骨架**，不是任何生产版本的副本：同名生产件 2,525 行（非空），
 > 这里 1,150 余行。骨架的目标是"让人读懂这套形状并照着改"，不是"拿来直接顶生产"。
+>
+> 0.4.0 起再加三件**上游本来就在跑、此前不在本仓**的新增面（`router-lazy` / `yearring-index` / 可选插件），
+> 它们不在上面那 2,525 行里。
 
 ---
 
 ## 它是什么 / 不是什么
 
-**是**：一套 CLI（受控动词 + 巡检）+ 一份 agent preset 样板。零第三方依赖，只用 Node 内置模块。
+**是**：一套 CLI（受控动词 + 巡检 + 两个读数件）+ 一份 agent preset 样板 + 一个**可选**的 web 插件。零第三方依赖，只用 Node 内置模块。
 
 **不是**：不是框架、不是服务、不是看板、不是 cron。它不替你调度，也不替你存卡 ——
 它读你能读到的那些状态，然后**在边界内**做事。
@@ -32,6 +35,9 @@ router-guard.mjs   巡检三项（置顶复位 / 归档保护 / cwd 还在）
 lib/say.mjs        最小投话（两闸：不投自己 / 不投已归档）
 lib/router-head.mjs 接续头压缩（最近三句 + 一句摘要 → 3~4 行的头）
 lib/vision-gaps.mjs 愿景差距排序（各线目标 vs 看板现状，回答"下一步该推哪条"）
+router-lazy.mjs    偷懒四档判据（哪条主线该被催、催什么；只读）
+yearring-index.mjs 愿景档目录索引（每线一行：ask 分档计数 + 排第一那条）
+plugin/            可选 web 插件（「收口并清空」按钮：先落档、再原地压缩）
 lib/config.mjs     阈值解析（env > 配置文件 > 缺省，一个口）
 lib/host-rpc.mjs   最小宿主 RPC 客户端（自签 /api cookie）
 presets/router/    agent preset 样板（人格 + 插件声明）
@@ -257,6 +263,103 @@ node lib/router-head.mjs --selftest                                       # 29 �
 
 ---
 
+## 判「这条主线停下没动」（`router-lazy.mjs` · bin `dsh-router-lazy`）
+
+`brief` 数的是停留天数，判不出"谁该被催、催什么"。这条命令把一份会话表 + 一份看板 + 一份接力台账
+摆在一起，输出「该催谁」清单。四档的含义（**别混着用**，混了就催错）：
+
+| 档 | 什么情况 | 该怎么处理 |
+|---|---|---|
+| `lazy` | 会话没在跑，可这条线有 **todo** 卡 / 有未完成的交接 / 标题自己标着【待续】 | 该催：投话让它去办那几张卡 |
+| `backlog` | 会话没在跑，这条线只有 **backlog** 卡 | 催**规划**不催跑：让它把卡移进 todo，或说明这批为什么不做 |
+| `handoff` | 标题标着【已交接】且线内还有活 | 别投给这一棒（会被"已交接闸"挡）：起新棒，或改投接手的会话 |
+| `stuck` | 会话闲置超过阈值，可这条线还有 **running / review** 卡 | 卡在跑、会话却死了：先核会话真死没，再决定重跑还是改投 |
+
+另有一列「今日已催 N 次」：读 `<home>/router-ops.jsonl` 数**本地当天**真投的 say/wake
+（演练、失败、别的动词都不算）。同一条线今天已经催 3 次还没动 ⇒ 该上报给人，而不是催第 4 次。
+
+```bash
+node router-lazy.mjs                    # 人读一屏
+node router-lazy.mjs --json             # 机读（数组永远是全量，不受 --top 影响）
+node router-lazy.mjs --idle-hours 6      # stuck 阈值（默认 3 小时）
+node router-lazy.mjs --selftest          # 32 条夹具断言，不连生产、不碰网络
+```
+
+取数失败（会话表 / 看板 / 台账任一读不动）⇒ **rc=3，且一个字都不说"没事"**。把"取数失败"降级成
+"没人偷懒"是这类工具最容易犯的假绿，这条判据就是挡它的。
+
+线名从哪来？默认两路证据（接力台账 `chains[].mainline` + 标题令牌），都不命中的线进 `orphanLines`
+（有在途卡但没有在册会话：只报不催）。要换成别的来源就注入：
+
+```js
+import { analyze } from './router-lazy.mjs';
+const r = analyze({
+  sessions, tasks, ledger,
+  resolveLine: (s) => ({ line: myIndex.lookup(s.sessionId), lineSource: 'my-index' }),
+});
+```
+
+**排期的 todo 不算待办**：`schedule.enabled && nextRunAt > now` 的卡记进 `cards.scheduledTodo`，
+不判 `lazy`（它在等窗口，催它 = 白打扰）；排期**已过点**的仍算 todo，理由里另写一句「排期已过点」。
+
+---
+
+## 愿景档目录索引（`yearring-index.mjs` · bin `dsh-router-yearring`）
+
+一个目录，一条工作线一份 `*.json`（`{ line, humanDoc, asks: [{ id, kind, what }] }`），本命令把它扫成
+「每线一行」：asks 的 A/B/C 计数、排第一的那条 ask、人读档在不在、JSON 好不好。
+
+```bash
+node yearring-index.mjs                  # 人读表
+node yearring-index.mjs --json           # 机读
+node yearring-index.mjs --dir ./docs/vision
+```
+
+`kind` → 档：`blocked-by-owner` ⇒ **A**（卡在操作者手上：只上桌，不进"该推"）、
+`capability-gap` ⇒ **B**、`self-todo` ⇒ **C**（自己就能干，最该推）；别的词按 B 计并**点名**（不静默吞）。
+
+**它只读**：不建档、不改档、不补字段。坏 JSON / 缺字段 / 目录不存在三档一律**报黄、rc=0** ——
+一个坏文件不该带崩整轮索引。目录从哪来：`--dir` > `ROUTER_VISION_DIR` > 配置 `vision.dir` >
+`<cwd>/docs/vision`（与 `brief --gaps` 同一口径，不另造一套）。
+
+---
+
+## 可选插件：收口并清空按钮（`plugin/`）
+
+给主会话的输入框加一个「收口」按钮，一键两步、**顺序不能反**：
+
+1. 跑 `router-act reset --apply` —— 把槽位与待定项落进结论档（**这一步是保命**，先落档再清空）；
+2. 调宿主的 `compaction.compactNow()` —— 原地压缩，会话 id 不变。
+
+失败语义写死在代码里：落档失败 ⇒ **绝不压缩**（报错里明说「保命优先」）；落档成功但压缩失败 /
+没有压缩服务 / 没有可压历史 ⇒ 一律报「⚠️ 已落档，但这次没压（原因）」，**不报成功**。
+只有人点才动手（无定时器、无事件订阅、无打开即压）；非 Router 会话直接拒，并给一句人话原因。
+
+装法（包级，CLI 与插件各走各的：CLI 进 `bin`，插件按 `dsh.bundle.patch` 加载，两边互不依赖）：
+
+```bash
+npm i @kira905/dsh-router-toolkit
+```
+
+组合里挂上（`cordis.patch.yml` / `dsh.profile.bundles`）：
+
+```yaml
+- id: dsh-router-reset-btn
+  name: '@kira905/dsh-router-toolkit/plugin'
+  config:
+    routePrefix: /api/dsh-router-reset                       # 可改
+    routerActPath: ~/.dsh/tools/dsh-butler/router-act.mjs     # 可省，缺省按顺序找
+```
+
+`router-act.mjs` 解析顺序：`DSH_ROUTER_ACT` env > 与本包同目录的 `router-act.mjs` >
+`<home>/tools/dsh-butler/router-act.mjs`。
+
+**路由前缀两边要一致**：client 半边读 `window.__DSH_ROUTER_RESET_PREFIX__`，不写就两边都用缺省值。
+三处 id 也要对齐（本文件的 `id`、`plugin/client.js` 里 `__ModuleLoader__.load({ id })`、
+`dsh.client` 的期望名），对不齐的表现是"加载了但没注册"。
+
+---
+
 ## 阈值全是可配的（env > 配置文件 > 缺省）
 
 配置文件缺省 `<home>/router-config.json`（`ROUTER_CONFIG_FILE` 可指到别处）；**文件不在 = 没配置**，不创建、不报错；
@@ -285,6 +388,8 @@ node lib/router-head.mjs --selftest                                       # 29 �
 | `ROUTER_LEDGER_FILE` | 卡账本（**只读**），用来判"这条未答 attention 的卡还在不在板、是不是已完成" | `<home>/task-board/ledger-v2.json`；读不到 ⇒ 陈旧账**一条都不销** |
 | `ROUTER_BOARD_HEADERS` | 看板 state 端点要额外请求头时给一个 JSON 对象串（本件**不猜**任何私有头名） | 不加头 |
 | `ROUTER_LOG_DIR` | 结论档目录（缺省 `<工作目录>/docs/year-rings`） | 见左 |
+| `ROUTER_LAZY_SESSIONS_FILE` / `_BOARD_FILE` / `_LEDGER_FILE` / `_OPS_FILE` | `router-lazy` 的夹具注入口（`--selftest` 用，生产别设） | 不设 = 走 rpc / 真实文件 |
+| `DSH_ROUTER_RESET_PREFIX` / `DSH_ROUTER_ACT` | 插件：路由前缀 / `router-act.mjs` 位置 | `/api/dsh-router-reset` / 自动按顺序找 |
 
 ---
 

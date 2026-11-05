@@ -1,0 +1,10 @@
+# dsh-router-toolkit bundle patch: registers the reset-button plugin entry.
+#
+# 服务端半边只注册一条 entry；client 半边由根 package.json 的 `dsh.client` 声明
+# （`platform: "web"` + `exports["./client"]`），dsh 按这条 entry 的 id 去找 client 导出。
+#
+# ⚠️ 三处 id 要对齐：本文件的 `id`、`plugin/client.js` 里 `__ModuleLoader__.load({ id })`、
+#    以及（某些 dsh 版本）`dsh.client` 的期望名。对不齐的表现是「加载了但没注册」。
+- insert:
+    - id: dsh-router-reset-btn
+      name: '@kira905/dsh-router-toolkit/plugin'

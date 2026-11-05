@@ -157,7 +157,7 @@ const bl = briefOut.split('\n');
 ok(bl.length <= 3, `brief 硬上限 3 行（实际 ${bl.length} 行）`, bl.length);
 ok(bl[0].includes('车况') && bl[0].includes('等拍板 1 件'), '第 1 行 = 车况 + 等拍板件数', bl[0]);
 ok(bl[1].startsWith('先看 线A'), '第 2 行 = 建议先看哪条', bl[1]);
-ok(bl[2].includes('要你定'), '第 3 行 = 要主人定的事', bl[2]);
+ok(bl[2].includes('要你定'), '第 3 行 = 要操作者定的事', bl[2]);
 
 // 没有待拍板（也没有待验收）⇒ 明确写 0 件（不省略第三行）
 const noReviewTasks = bTasks.filter((t) => t.status !== 'review');
@@ -241,8 +241,8 @@ putJson('线B能力.json', {
   line: '线B能力', version: 'v1', updatedAt: '2026-11-01T00:00:00Z',
   asks: [{ id: 'B1', kind: 'capability-gap', what: '缺跨机统一' }],
 });
-putJson('线A等主人.json', {
-  line: '线A等主人', version: 'v1', updatedAt: '2026-11-01T00:00:00Z',
+putJson('线A等操作者.json', {
+  line: '线A等操作者', version: 'v1', updatedAt: '2026-11-01T00:00:00Z',
   asks: [
     { id: 'A1', kind: 'blocked-by-owner', what: '名字代号未定' },
     { id: 'A2', kind: 'blocked-by-owner', what: '调度权给不给' },
@@ -250,7 +250,7 @@ putJson('线A等主人.json', {
 });
 putJson('线P命中.json', {
   line: '线P命中', version: 'v1', updatedAt: '2026-11-02T00:00:00Z',
-  asks: [{ id: 'B7', kind: 'capability-gap', what: '主人点过的方向' }],
+  asks: [{ id: 'B7', kind: 'capability-gap', what: '操作者点过的方向' }],
 });
 putJson('线D久.json', {
   line: '线D久', version: 'v1', updatedAt: '2026-10-01T00:00:00Z',
@@ -281,13 +281,13 @@ ok(byLine('线P命中')?.score === 7 && byLine('线P命中')?.ownerPriority === 
 ok(byLine('线B能力')?.score === 0 && byLine('线B能力')?.ownerPriority === false, '没命中 ownerPriority ⇒ 不加分；done 卡不算在途（0 分）', byLine('线B能力'));
 // 线D久：0 + 2×(1 张在途 failed) + 0.5×min(30,7)=3.5 − 0 = 5.5
 ok(byLine('线D久')?.score === 5.5 && byLine('线D久')?.activityDays === 30, '活动天数封顶 7（30 天 ⇒ 0.5×7=3.5）', byLine('线D久'));
-// 线A等主人：0 + 0 + 0 − 0.2×2 = -0.4
-ok(byLine('线A等主人')?.score === -0.4 && byLine('线A等主人')?.tier === 'A', 'A 类线扣分（−0.2×2）且 tier=A', byLine('线A等主人'));
-ok(gaps.map((g) => g.line).join('>') === '线C多>线P命中>线D久>线B能力>线A等主人', '顺序 = 分数降序', gaps.map((g) => g.line));
+// 线A等操作者：0 + 0 + 0 − 0.2×2 = -0.4
+ok(byLine('线A等操作者')?.score === -0.4 && byLine('线A等操作者')?.tier === 'A', 'A 类线扣分（−0.2×2）且 tier=A', byLine('线A等操作者'));
+ok(gaps.map((g) => g.line).join('>') === '线C多>线P命中>线D久>线B能力>线A等操作者', '顺序 = 分数降序', gaps.map((g) => g.line));
 ok(byLine('线C多')?.askId === 'C1' && byLine('线C多')?.tier === 'C', 'askTop = 该线排名第一的 ask（C 类优先）', byLine('线C多'));
-ok(byLine('线A等主人')?.askId === 'A1', '只剩 A 类的线，第一名才是 A（上桌）', byLine('线A等主人'));
+ok(byLine('线A等操作者')?.askId === 'A1', '只剩 A 类的线，第一名才是 A（上桌）', byLine('线A等操作者'));
 ok(byLine('线C多')?.lastDigest === '2026-11-02' && byLine('线B能力')?.lastDigest === null, '上次收口从结论档槽位取（没有就 null，不猜）', { C: byLine('线C多')?.lastDigest, B: byLine('线B能力')?.lastDigest });
-ok(ownerPriorityHit('统筹线 · 判据', ['统筹线']) === true && ownerPriorityHit('视频线', ['统筹线']) === false, 'ownerPriorityHit 互为子串（含中点也能对上）');
+ok(ownerPriorityHit('示例线 · 判据', ['示例线']) === true && ownerPriorityHit('视频线', ['示例线']) === false, 'ownerPriorityHit 互为子串（含中点也能对上）');
 ok(ownerPriorityHit('任意线', []) === false && ownerPriorityHit('', ['x']) === false, '没有 ownerPriority / 空线名 ⇒ 不命中、不报错');
 
 const gapText = renderVisionGaps(gaps);
@@ -295,9 +295,9 @@ const gl = gapText.split('\n');
 ok(gl[0] === '愿景差距（Top-3）：', '段落标题逐字一致', gl[0]);
 ok(gl.length === 1 + DEFAULT_GAP_TOP + 1, `≤Top-N 条 + 1 行「另有」提示（实际 ${gl.length} 行）`, gl.length);
 ok(gl[1].startsWith('· 线C多｜差：') && gl[1].includes('（C1 · C）') && gl[1].includes('上次收口 2026-11-02'), '第 1 条格式：线名｜差：…（askId · tier）｜上次收口', gl[1]);
-ok(!gl.slice(1, 1 + DEFAULT_GAP_TOP).some((l) => l.includes('线A等主人')), 'A 类线不进「该推」的前三（只上桌）', gl.slice(1, 4));
-const gapTextA = renderVisionGaps([byLine('线A等主人')]);
-ok(gapTextA.includes('· 线A等主人｜等操作者：'), '排第一是 A 时渲染成「等操作者：」而不是「差：」', gapTextA);
+ok(!gl.slice(1, 1 + DEFAULT_GAP_TOP).some((l) => l.includes('线A等操作者')), 'A 类线不进「该推」的前三（只上桌）', gl.slice(1, 4));
+const gapTextA = renderVisionGaps([byLine('线A等操作者')]);
+ok(gapTextA.includes('· 线A等操作者｜等操作者：'), '排第一是 A 时渲染成「等操作者：」而不是「差：」', gapTextA);
 ok(renderVisionGaps([]) === '愿景差距（Top-3）：\n（没有可读的愿景件：本轮没有该推的线）', '没有数据时明确写一行，不硬凑');
 ok(renderVisionGaps([], { note: '（自定义说明）' }).includes('（自定义说明）'), '有说明就用说明');
 
@@ -361,7 +361,7 @@ ok(!line3Fail.includes('执行失败') && !line3Fail.includes('failed'), '失败
 ok(line3Fail.includes('失败卡 1 件只报数、不占你的板'), '失败卡只进折叠计数（只报数 · 不承诺有机器在重试）', line3Fail);
 ok(!line3Fail.includes('挂掉那张'), '失败卡的标题也不进明细', line3Fail);
 
-// 排序口径：真等主人拍的（askedAt 最久在前）→ 待验收。用看板里查不到的 cardId，让人读到问句原文。
+// 排序口径：真等操作者拍的（askedAt 最久在前）→ 待验收。用看板里查不到的 cardId，让人读到问句原文。
 const line3Order = renderNeedsOwner({ tasks: aTasks }, {
   open: [
     { cardId: 'gone-late', question: '真问句·后问的', askedAt: '2026-11-04T00:00:00Z' },
@@ -369,7 +369,7 @@ const line3Order = renderNeedsOwner({ tasks: aTasks }, {
   ],
 });
 ok(line3Order.indexOf('先问的') < line3Order.indexOf('后问的')
-  && line3Order.indexOf('后问的') < line3Order.indexOf('待验收'), '排序：真等主人拍的（等得最久在前）→ 待验收', line3Order);
+  && line3Order.indexOf('后问的') < line3Order.indexOf('待验收'), '排序：真等操作者拍的（等得最久在前）→ 待验收', line3Order);
 
 const line3None = renderNeedsOwner({ tasks: [{ id: 'fa1', line: '线C', status: 'failed', updatedAt: 1, title: 'x' }] }, { open: [failedAtt] });
 ok(line3None.startsWith('要你定 0 件') && line3None.includes('失败卡 1 件只报数'), '只有失败卡 ⇒ 0 件 + 折叠计数（不摆失败卡）', line3None);

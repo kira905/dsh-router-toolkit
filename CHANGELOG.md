@@ -4,6 +4,89 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses 0.x semantics
 (minor bumps may break compatibility — see the note below).
 
+## 0.4.0
+
+Three new surfaces — none of them existed in this repo before, all three had been running on a live
+instance first, and each one used to carry at least one private coupling that is now gone:
+
+* **`router-lazy`** — "is this workstream actually idle, and what should be nudged" (four buckets +
+  a *nudged N times today* column).
+* **`yearring-index`** — a pure read-only index over a "one vision file per workstream" directory.
+* **an optional web plugin** — an explicit *wrap up and compact* button (host route + input-toolbar half).
+
+Nothing was removed: still seven verbs, still two delivery gates, still zero third-party runtime
+dependencies. What changed about the private bits is the interesting part: a hard-coded home path became
+`--dir` / `--profile` / `DSH_HOME` resolution, a private request header became `ROUTER_BOARD_HEADERS`
+(this tool has always refused to guess private header names), a hard-coded route prefix became
+`routePrefix`, and "where does the workstream name come from" became an injectable `resolveLine`.
+
+**Per-file provenance** (distilled by hand — these are *not* copies; sha16 of the source each file was
+brought level with, then sha16 of what this release ships):
+
+| File | Distilled from | This release |
+|---|---|---|
+| `router-lazy.mjs` (new) | 61,300 B · sha16 `f6328f8976551804` · `--selftest` 29 assertions | 65,918 B · sha16 `4018332f07084ffa` · **32** assertions |
+| `yearring-index.mjs` (new) | 11,736 B · sha16 `318b5b89c3899765` | 12,669 B · sha16 `b25d9aeacff12662` |
+| `plugin/index.js` (new) | 16,567 B · sha16 `0b9b6b2e9fee5503` | 20,168 B · sha16 `f7da959c8600b17a` |
+| `plugin/client.js` (new) | 8,493 B · sha16 `0c6153a02599684d` | 9,190 B · sha16 `7e1bdd17c23156fc` |
+| `plugin/cordis.patch.yml` (new) | 312 B · sha16 `a67e8d0add7fa411` | 594 B · sha16 `348acdd6850776d8` |
+| `test/test-yearring-index.mjs` (new) | 8,121 B · sha16 `72b57cc9eac59e66` · 34 assertions | 9,677 B · sha16 `c45c53d1cedc762c` · **38** assertions |
+| `test/test-router-reset-plugin.mjs` (new) | **no tests at all** (0 assertions) | 14,412 B · sha16 `c0ebac9e67760c53` · **39** assertions, incl. 2 negative controls |
+
+### Added
+
+- **`dsh-router-lazy` (`router-lazy.mjs`)** — one command that answers "which workstream should be
+  pushed, and about what". Reads session list + board state + relay ledger, and sorts every mainline
+  session into four buckets — **`lazy`** (not running, but there is a `todo` card / an unfinished hand-off /
+  the title says "to be continued"), **`backlog`** (only backlog cards: nudge *planning*, not *running*),
+  **`handoff`** (the title says "handed off" and work remains: don't message that session, start a new
+  one), **`stuck`** (idle past the threshold yet the board still has `running`/`review` cards). Cards with
+  a **future** schedule are counted as `scheduledTodo` and never make a line `lazy` (waiting for a window
+  is not slacking); already-due schedules still count as `todo` with an explicit "schedule is overdue"
+  reason. Also prints **"nudged N times today"** per line, read from `<home>/router-ops.jsonl`
+  (only real `say`/`wake` on the local day; dry-runs, failures and other verbs don't count) — a line
+  nudged three times today and still idle should be escalated, not nudged a fourth time.
+  🔴 Fetch failures are **fail-closed**: missing session list / board / ledger ⇒ `rc=3` and *not one word*
+  suggesting "nobody is slacking".
+  🟢 Workstream names are **injectable**: `analyze({ resolveLine })` replaces the default two-evidence
+  resolver (relay ledger + title tokens) outright.
+  🟢 Board request headers come from **`ROUTER_BOARD_HEADERS`** (JSON object); the default adds none, and
+  the code names no private header.
+- **`dsh-router-yearring` (`yearring-index.mjs`)** — index a directory of "one vision file per
+  workstream" JSONs into one row per line: ask counts by tier, the top-ranked ask, whether the human
+  doc exists, and the JSON status. `kind` → tier via a **default mapping that can be overridden**
+  (`vision.kindTiers`); unknown kinds count as B *and* are named in `warnings`. Strictly read-only:
+  broken JSON / missing fields / missing directory all **report yellow with `rc=0`** instead of throwing.
+  Directory resolution: `--dir` > `ROUTER_VISION_DIR` > config `vision.dir` > `<cwd>/docs/vision`
+  (same ladder as `brief --gaps` — deliberately not a second scheme).
+- **Optional plugin `plugin/`** — an input-toolbar button that wraps up a Router session: **①** run
+  `router-act reset --apply` (persist slots + open decisions first — this step is the safety net), **②**
+  then `compaction.compactNow()` in place (same session id). Hard-coded failure semantics: reset failure ⇒
+  **never compacts**; compaction failure / service absent / nothing to compact ⇒ reports
+  "⚠️ already persisted, but did not compact (why)", never success. Human-triggered only (no timer, no
+  subscription), non-Router sessions refused with a plain-language reason.
+  🟢 `routePrefix` configurable; `router-act.mjs` resolved as `DSH_ROUTER_ACT` > beside the package >
+  `<home>/tools/dsh-butler/`.
+- **`test/test-router-reset-plugin.mjs`** — 39 assertions over the plugin's two hard rules (safety order,
+  never silent) plus the client half rendered in a `vm` sandbox; **two negative controls** prove the
+  assertions are not vacuous (flip the premise, the same check must go red).
+- **`test/test-yearring-index.mjs`** — 38 assertions, all against data built under `os.tmpdir()`; the one
+  assertion from the upstream fixture that read a real production directory was replaced by two that
+  prove directory resolution works from `env` / a parent-directory relative doc (the deleted one could
+  only pass on that one machine).
+
+### Changed
+
+- `package.json` gains `dsh.bundle.patch` + `dsh.client` (`platform: web`), `exports` (`./client`,
+  `./plugin`, and the three CLI entry points), two new `bin` names, and the new files in `files`.
+  Loading is split: plugin through `dsh.profile.bundles`, CLIs through `bin` — neither side needs the
+  other.
+- `README.md` documents the three new surfaces (including what each of the four buckets means and why
+  mixing them up produces wrong nudges); `README.en.md` carries the same three sections so the two
+  languages never state two different things.
+- `test/test-router-act.mjs` wording only: 16 occurrences of a persona-specific pronoun → a neutral one,
+  and one internal workstream name → a neutral example (3). Same 156 assertions, same expectations; the
+  repo should not describe itself in two vocabularies at once.
 ## 0.3.0
 
 Catch-up release: the distilled skeleton is brought up to the feature set the production tool grew over the
