@@ -10,6 +10,18 @@
  *   3 cwd 还在 : 目标目录存在 **且** 当前会话 header.cwd 仍是它 ⇒ 假就只报警（**不自动建目录**：
  *                免得将错就错把会话钉到一个空目录上）。生产版另两项（会话身份漂移 / 入站通道
  *                Bot ready）判的是**部署事实**，不搬。
+ *
+ * ── 与生产版（同一个名字的五项守护）的差异登记 ──────────────────────────────
+ *   本件是**三项**；生产版五项，另两项：
+ *     · 「身份漂移」= 某个 JSON 里按通道键写死了"当前会话 uuid"，键形如
+ *                     `<接入前缀>:<appId>:<通道>:<对端id>`；
+ *     · 「Bot ready」= 扫本机 web 日志里有没有 `<接入前缀> Bot ready! appId=…`。
+ *   两者的输入都是**某一种接入方式的部署事实**（一个具体 IM 平台的 appId、一份本机日志目录）：
+ *   换台机器 / 换接入方式就恒 unknown 或恒报警 ⇒ 对外部用户是空转，故不进本仓。
+ *   想要等价能力，用本件的 `--router-cwd` + 宿主自己的巡检拼一个五项版即可。
+ *   已对齐的部分：**写后回读带 settle 重试**（RPC 先回、workspace.json 后落盘 ⇒ 立刻回读会假 alarm）。
+ *   本仓额外加严：**参数走白名单，未知 flag ⇒ rc=2、零写入**（生产版忽略未知参数 ⇒ `--aply` 会静默
+ *   变成 dry-run；本仓按 `router-act.mjs` 0.1.1 的同一条教训统一成 fail-closed）。
  * 结局四种 `ok` / `已复位` / `报警` / `unknown`（读不到 ⇒ 记 unknown 继续下一项，整脚本不崩）；
  * 幂等（复位全是「只在不对时才动」）；报警去重（站着不动的那条默认 6 小时只落一行，「已复位」
  * 不受约束；`--no-dedupe` / `--dedupe-min 0` 可关）；失败即让路（任何一处读不到 ⇒ 该项 unknown、
@@ -27,7 +39,7 @@ import { acquireTickLock, releaseTickLock, writeJsonAtomic, readJsonSafe } from 
 import { readSessionHeader, findSessionFile } from './lib/session-header.mjs';
 import { alert } from './lib/alert.mjs';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.3.0';   // 与包版本同线（0.1.1 → 0.3.0：只做版本对齐 + 回读 settle 对齐，判据不变）
 const ARGV = process.argv.slice(2);
 const has = (f) => ARGV.includes(f);
 const val = (f, d) => { const i = ARGV.indexOf(f); return i >= 0 ? ARGV[i + 1] : d; };
@@ -65,6 +77,21 @@ function canon(p) {
   }
 }
 const result = (id, label, status, reason, extra = {}) => ({ id, label, status, reason: clip(reason, 400), ...extra });
+
+/**
+ * 写后回读：落盘可能有几十毫秒延迟（RPC 先回、文件后写）⇒ 立刻回读会**假 alarm**。
+ * 只在 `--apply` 之后用；读不到就白等，最多 tries×waitMs。
+ */
+async function readWsSettled(tries = 10, waitMs = 250) {
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    const r = readJsonSafe(CFG.wsFile);
+    if (r.ok && r.value?.global?.workspaceIds) return r.value;
+    last = r;
+    if (i < tries - 1) await new Promise((res) => setTimeout(res, waitMs));
+  }
+  return last?.ok ? last.value : null;
+}
 
 /** 唯一的写 RPC 入口（离线夹具 / 失败都在这里收口）。 */
 async function rpc(method, payload) {
@@ -129,7 +156,8 @@ async function checkPin(st) {
   if (!APPLY) return result(id, label, ALARM, `${detail} —— dry-run 未动，加 --apply 会挪回第 1 位`, { sig: 'pin|not-first', wouldFix: true });
   const r = await rpc('workspace.insertBefore', { workspaceId: st.wsId, beforeWorkspaceId: ids[0] });
   if (!r.ok) return result(id, label, ALARM, `${detail}；insertBefore 失败：${r.error}`, { sig: 'pin|not-first' });
-  const top = String(readJsonSafe(CFG.wsFile).value?.global?.workspaceIds?.[0] ?? '');
+  const after = await readWsSettled(8, 250);
+  const top = String(after?.global?.workspaceIds?.[0] ?? '');
   return top === st.wsId
     ? result(id, label, FIXED, `已挪回第 1 位（原第 ${idx + 1} 位）`)
     : result(id, label, ALARM, `insertBefore 回执 ok，但回读第 1 位不是它（${CFG.wsFile}）`, { sig: 'pin|not-first' });
@@ -145,7 +173,8 @@ async function checkArchive(st) {
   if (!APPLY) return result(id, label, ALARM, `当前会话 ${shortId(st.currentSid)} 在 archivedSessionIds 里 —— dry-run 未动，加 --apply 复原`, { sig: 'archive|archived', wouldFix: true });
   const r = await rpc('workspace.unarchiveSession', { sessionId: st.currentSid });
   if (!r.ok) return result(id, label, ALARM, `会话已被归档；unarchiveSession 失败：${r.error}`, { sig: 'archive|archived' });
-  const still = new Set((readJsonSafe(CFG.wsFile).value?.global?.archivedSessionIds ?? []).map(String));
+  const after = await readWsSettled(8, 250);
+  const still = new Set((after?.global?.archivedSessionIds ?? []).map(String));
   return !still.has(st.currentSid)
     ? result(id, label, FIXED, `已复原会话 ${shortId(st.currentSid)}`)
     : result(id, label, ALARM, `unarchiveSession 回执 ok，但回读仍在归档名单里（${CFG.wsFile}）`, { sig: 'archive|archived' });
@@ -186,6 +215,24 @@ function pruneMarks(marks, now) {
   return out;
 }
 
+/** 合法参数（**白名单**：不认识的 flag ⇒ rc=2，一个字节都不写，别让 `--aply` 静默变成 dry-run）。 */
+const VALUE_FLAGS = ['--router-cwd', '--dedupe-min'];
+const BOOL_FLAGS = ['--apply', '--json', '--once', '--quiet', '--no-dedupe', '--help', '-h'];
+
+/** @returns {string[]} 不认识的参数（空数组 = 全认识） */
+function unknownFlags(argv) {
+  const takesValue = new Set(VALUE_FLAGS);
+  const known = new Set([...VALUE_FLAGS, ...BOOL_FLAGS]);
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = String(argv[i]);
+    if (!a.startsWith('-')) continue;      // 参数的值（或误打的位置参数）不查
+    if (!known.has(a)) { out.push(a); continue; }
+    if (takesValue.has(a)) i += 1;         // 跳过这个参数的值
+  }
+  return out;
+}
+
 function usage() {
   return [
     `router-guard.mjs v${VERSION} —— 三项巡检（置顶复位 / 归档保护 / cwd 还在）`, '',
@@ -195,12 +242,20 @@ function usage() {
     '  --json / --once     机读输出 / 兼容定时任务的固定形态',
     '  --quiet             不打 stderr 告警回声（落盘照旧）',
     '  --no-dedupe / --dedupe-min N   关掉 / 调整报警去重窗口（默认 360 分钟）', '',
-    '退出码：0 正常（含"有报警"）· 3 环境未就绪、本轮让路 · 1 崩了',
+    '🔴 参数是白名单：不认识的 flag ⇒ rc=2 + 打印本段用法，零写入（`--aply` 这类笔误不会被当成功）',
+    '退出码：0 正常（含"有报警"）· 2 参数不认识 · 3 环境未就绪、本轮让路 · 1 崩了',
   ].join('\n');
 }
 
 export async function main() {
   if (HELP) { process.stdout.write(`${usage()}\n`); return 0; }
+  // 🔴 白名单闸在**任何副作用之前**（不抢锁、不写状态件、不落告警）
+  const unknown = unknownFlags(ARGV);
+  if (unknown.length) {
+    const hint = unknown.some((f) => f.includes('=')) ? '\n  （不支持 `--flag=value` 形式：参数与值用空格分开）' : '';
+    process.stderr.write(`❌ 不认识的参数 ${unknown.map((f) => `"${f}"`).join(' / ')} —— 不认识就拒（rc=2，一个字节都没写）${hint}\n${usage()}\n`);
+    return 2;
+  }
   const t0 = Date.now();
   const lock = acquireTickLock('router-guard', { ttlMs: CFG.ttlMs, home: CFG.home });
   if (!lock.ok) {

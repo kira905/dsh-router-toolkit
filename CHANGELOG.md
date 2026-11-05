@@ -4,6 +4,90 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses 0.x semantics
 (minor bumps may break compatibility — see the note below).
 
+## 0.3.0
+
+Catch-up release: the distilled skeleton is brought up to the feature set the production tool grew over the
+last six rounds — an **optional vision pointer** on conclusion rows, a **mechanical per-workstream digest**,
+**slot-block refresh after every digest**, **active-workstream-first slot selection**, and
+**stale-decision bookkeeping on the read side that fails open**. Nothing was removed: still seven verbs,
+still two delivery gates before the preview, still zero third-party runtime dependencies.
+
+**Per-file provenance** (distilled by hand — these are *not* copies; sha16 of the source each file was
+brought level with):
+
+| File | Source it was brought level with | This release |
+|---|---|---|
+| `router-act.mjs` | prod 141,907 B · sha16 `81bab67ab1c94e51` (v1.7.0) | 69,761 B · sha16 `aedd1c6d82c67197` |
+| `router-guard.mjs` | prod 34,736 B · sha16 `a94684cebfda93bf` (v1.1.0, five checks) | 22,587 B · sha16 `19531a59e79bb6a0` (three checks + strict flags) |
+| `test/test-router-act.mjs` | prod fixture 38,394 B · sha16 `e9447db58145606e` (136 assertions) | 43,709 B · sha16 `b7541707cec8c941` (**156 assertions**) |
+
+### Added
+
+- **`digest --ask <id>`** — notes a ≤6-character **vision pointer** on that workstream's conclusion row
+  (`- date｜line｜conclusion｜ask=a1｜ref：…`), pointing at an `asks[].id` in that workstream's vision file.
+  Omitting `--ask` adds **not one character** (byte-identical to the previous row shape); `--ask -` means
+  "explicitly none". Parsing is tail-anchored, so a conclusion that merely mentions `ask=…` is not misread.
+- **`digest --auto`** — one **mechanical** line per *active* workstream (zero model calls: fetch + string
+  concat). Takes the most recent `done` card's title (truncated to the slot width) with the card id as ref;
+  a workstream with no `done` card degrades to `「status word: most recent card」` instead of inventing a
+  conclusion. Shares the single append path with `--line`, so idempotency (line + date) still holds.
+- **`refreshResumeHeadSlots()`** — after a successful digest, the `#### 一行槽位` block of the *newest*
+  handoff head is re-rendered in place. Only that block changes: timestamp, decision list, and every
+  historical conclusion row stay byte-identical; older handoff heads are history and are left alone; if the
+  file has no handoff head it is **not invented** (`reason: no-slot-section`). Idempotent (equal rendering ⇒
+  no write, same sha).
+- **`readSlots(max, dir, prefer)`** — third argument = the set of currently *active* workstreams. Active
+  lines claim the 16 slots first; idle lines only backfill, and inside each group the date-descending order
+  is preserved (stable). Without it, ordering is byte-identical to before (`reset` depends on this).
+  `reset` and all three digest write paths pass the same set; if the board is unreachable it degrades to the
+  plain date ordering rather than blocking the write.
+- **Stale-decision bookkeeping (read side only, `fail-open`)** — `readAttentions()` splits unanswered
+  attentions into `open` / `stale`: a card **absent from the ledger** (archived / deleted / never existed) or
+  already **`done`** is no longer counted as "awaiting you". `brief` line 1 gains
+  `（另有 N 件卡已归档/完成/不在板，不计入）`; `brief --json` gains
+  `needsOwner.staleAttentions{count, cardIds, checked}` (keys added only).
+  🔴 **If the ledger cannot be read/parsed, nothing is dropped** (`ledgerChecked:false`, open returned
+  as-is, and the output says so: `陈旧账没核成：账本读不到，按原样全算`). Over-reporting is acceptable;
+  silently dropping a decision that really waits for you is not. It never writes: no state file, no
+  `answeredAt`, no attention deletion, no network.
+- **`aggregate(tasks, threadLine, threads)` / `lineOfCardMap(tasks, threadLine)`** — optional card-grouping
+  fallback for boards that put cards into threads; both extra arguments are optional and omitting them keeps
+  the old behaviour exactly.
+- **`renderJson()`** exported (the `status --json` shape, so fixtures no longer have to re-implement it).
+- **`ROUTER_LEDGER_FILE`** (optional, read-only) and **`ROUTER_BOARD_HEADERS`** (JSON object of extra request
+  headers for the board endpoint — this tool never guesses private header names).
+- **`test/test-router-act.mjs`** — 156 offline assertions, wired into `npm test`. Covers the conclusion-row
+  round trip, slot rendering/refresh (idempotence, dry-run, multi-head, cap), active-first slots, mechanical
+  digest extraction, and the fail-open stale path including three negative controls.
+- **`router-guard.mjs`** — read-back after a repair is now retried (`8×250ms`): the RPC returns before
+  `workspace.json` is flushed, so an immediate read-back raised a false alarm.
+
+### Changed
+
+- **`brief` / `status` wording**: `待定 N 件` → `等拍板 N 件` (clearer about *who* is waiting), plus the stale
+  note described above.
+- **Line 3 numbering**: items are now separated by `①②③`; the previous fixed `②` separator rendered three
+  items as `①②②` (duplicate mark). The folded-count wording now also states that failed cards are only
+  counted (`失败卡 N 件只报数、不占你的板（没有自动重试，长期不动要点开看）`).
+- **Slot lines carry `ask=`** (`· line｜conclusion｜ask=a1｜date｜ref：…`); rows written before this release
+  render as `ask=-` — **not backfilled, not guessed**.
+- **`router-guard.mjs` flags are whitelisted**: an unknown flag ⇒ `rc=2` with usage printed and **zero
+  writes** (so `--aply` can no longer silently become a dry run). Same lesson as `router-act.mjs` 0.1.1,
+  now applied to both bins. Version of both bins aligned to `0.3.0`.
+  > 0.2.0's "guard's external contract is untouched" was the criterion *for that release*; this one is
+  > **stricter, not different**: the four outcomes, exit codes `0`/`3`, idempotency and dedupe are unchanged —
+  > all that is new is one more exit code (`2`) for a flag nobody should be passing.
+
+### Deliberately not included
+
+- **guard's "session-identity drift" and "inbound-channel bot ready" checks**: their inputs are deployment
+  facts of one specific integration (a concrete platform appId, a local log directory) — on any other
+  machine they are permanently `unknown` or permanently alarming. Reasoning is in the `router-guard.mjs`
+  header; the two checks that matter generically are shipped.
+- **`digest --replace`** (in-place rewrite of today's row) stayed out of the distilled skeleton: it needs a
+  same-day row + concurrency assumptions this skeleton does not claim. Keep the dedupe-key behaviour and edit
+  the file by hand if you must change a row.
+
 ## 0.2.0
 
 Capability release: two new building blocks (vision-gap ranking, hand-off head compression), one shared

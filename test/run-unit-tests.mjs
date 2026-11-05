@@ -273,11 +273,12 @@ await t('U15', 'renderNeedsOwner：≤N 条明细 + 折叠计数；全是失败�
   assert.equal(BRIEF_DEFAULTS.askMax, 3, '缺省上限 3 条');
   const two = renderNeedsOwner(board, { open: attnFixture }, { askMax: 2 });
   assert.ok(two.length > 0);
-  return `明细行=${line.split('②').length} · 折叠段=${/另有/.test(line)}`;
+  return `明细条数=${(line.match(/[①②③]/g) || []).length} · 折叠段=${/另有/.test(line)}`;
 });
 
-await t('U16', 'renderNeedsOwner 明细上限可配（3 → 1 时必须折叠）', async () => {
+await t('U16', 'renderNeedsOwner 明细上限可配（3 → 1 时必须折叠）+ 编号不重号', async () => {
   const { renderNeedsOwner } = runtime.act;
+  const marks = (s) => (String(s).match(/[①②③]/g) || []);
   const open = [
     { cardId: 'x1', question: '问题一', options: ['a'], askedAt: '2026-11-01T00:00:00Z' },
     { cardId: 'x2', question: '问题二', options: ['a'], askedAt: '2026-11-02T00:00:00Z' },
@@ -285,10 +286,12 @@ await t('U16', 'renderNeedsOwner 明细上限可配（3 → 1 时必须折叠）
   ];
   const line3 = renderNeedsOwner({ tasks: [] }, { open });
   const line1 = renderNeedsOwner({ tasks: [] }, { open }, { askMax: 1 });
-  assert.equal(line3.split('②').length, 3, '缺省 3 条明细');
-  assert.equal(line1.split('②').length, 1, 'askMax=1 时只留 1 条');
+  assert.equal(marks(line3).length, 3, '缺省 3 条明细');
+  assert.equal(marks(line1).length, 1, 'askMax=1 时只留 1 条');
   assert.ok(line1.includes('另有 2 件'), '其余折叠成计数');
-  return `3 条 → ${line3.split('②').length} 段；1 条 → ${line1.split('②').length} 段`;
+  // 2026-11-05 小修：原用固定「②」当分隔符 ⇒ 三条明细渲染成「①②②」重号；现在必须是 ①②③
+  assert.equal(marks(line3).join(''), '①②③', `三条明细的编号应是 ①②③，实得：${marks(line3).join('')}`);
+  return `3 条 → ${marks(line3).join('')}；1 条 → ${marks(line1).join('')}`;
 });
 
 // ── U17–U21 接续头压缩（空 / 超长 / 边界刚好不压） ─────────────────────────

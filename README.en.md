@@ -19,7 +19,7 @@ Three things it is trying to prove:
    paraphrased), so the next session does not re-read the whole transcript.
 
 > This is a **minimal distilled rewrite**, not a copy of any production version: the production file of
-> the same name is 1,263 non-blank lines, this one is ~700. The goal is to make the shape legible and
+> the same name is 2,525 non-blank lines, this one is ~1,150. The goal is to make the shape legible and
 > copy-able, not to drop it straight into production.
 
 ---
@@ -81,7 +81,7 @@ an empty table.
 | `brief` | Three-line summary (status line + what to look at first + what needs you); `--gaps` appends a vision-gap section | **none** |
 | `card-show` | Read one card's one-line summary (including its "awaiting decision" section) | **none** |
 | `say` | Send one line to a named session; dry-run by default | the only delivery leg = `lib/say.mjs` |
-| `digest` | Append one workstream's conclusion to the log (idempotency key = line + date) | one appended line |
+| `digest` | Append one workstream's conclusion to the log (idempotency key = line + date); `--ask` adds a ≤6-char vision pointer; `--auto` writes one mechanical line per active workstream | one appended line |
 | `reset` | Render slots + open decisions as a resumable "handoff head", appended to the log | one appended block |
 | `wake` | **stub**: this skeleton has no thread/card-group data plane | — |
 
@@ -116,6 +116,47 @@ The third `brief` line only lists what **genuinely needs your decision**:
   board no longer knows it, which is why one test is not enough.) **All three are configurable** — see the
   threshold table below.
 - ordering: real open decisions first, then cards awaiting review; inside each tier, longest-waiting first.
+
+### Slots and the handoff head: one line per workstream, refreshed on every digest
+
+The log has two kinds of content: the **conclusion area** (`- date｜line｜conclusion｜ask=…｜ref：…`, append-only)
+and the **handoff head** written by `reset` (one slot line per workstream + open decisions + how to continue).
+A slot is "the latest conclusion for that workstream"; the cap is **16 lines**.
+
+```bash
+# attach a vision pointer (an ask id from that workstream's vision file; ≤6 chars)
+node router-act.mjs digest --line release --text "rollback drill added" --ask a1 --apply
+
+# one mechanical line for every active workstream (zero model calls: fetch + string concat)
+node router-act.mjs digest --auto --apply
+```
+
+Two things worth remembering:
+
+1. **A successful digest also refreshes the slot block** of the newest handoff head — only the
+   `#### 一行槽位` block is replaced; timestamp, decision list and every historical row stay byte-identical.
+   If the rendered block equals what is already in the file, **nothing is written** (same-day re-runs keep the
+   file's sha). If the file never had a handoff head, it does **not** invent one (`no-slot-section`).
+2. **Active workstreams claim slots first**: slots are taken by date descending, but when you supply the
+   "currently active" line set, active lines fill the quota and idle lines only backfill. Otherwise one idle
+   line (digested earlier today, nothing in flight now) can push a running workstream out. Without the set,
+   behaviour is **byte-identical** to the plain date ordering (`reset` relies on this).
+
+### Stale decisions: read-side bookkeeping that **fails open**
+
+`brief` / `status` count "awaiting your call" from `attentions[]` in the state file. After a card is
+finished / archived / deleted, its attention may still be there — a **false signal**. This tool reconciles it
+on the **read side only**:
+
+- an unanswered attention whose card is **absent from the ledger** (archived / deleted / never existed) **or**
+  is already **`done`** goes into `stale` and is **not counted**; line 1 gains
+  `（另有 N 件卡已归档/完成/不在板，不计入）`.
+- 🔴 **If the ledger cannot be read/parsed, nothing is dropped** (open is returned as-is and the output says
+  `陈旧账没核成：账本读不到，按原样全算`). This **fail-open is deliberate**: better to over-report one item than
+  to silently drop a decision that really is waiting for you. If the count looks higher than you expect,
+  check whether that sentence appeared — it means the ledger path is wrong (`ROUTER_LEDGER_FILE`, default
+  `<home>/task-board/ledger-v2.json`, **optional**).
+- it is **read-only**: no state file writes, no `answeredAt`, no attention deletion, no network.
 
 ### Vision gaps: `brief --gaps`
 
@@ -232,6 +273,14 @@ and records a warning** instead of returning `NaN`.
 > the most expensive kind of configuration`). `makeResolver().trace` reports, per value, which layer it came
 > from (`env` / `config` / `default`).
 
+A few **environment-only** entry points (paths / switches rather than thresholds):
+
+| Variable | What it does | Default |
+|---|---|---|
+| `ROUTER_LEDGER_FILE` | card ledger (**read-only**), used to decide whether a card behind an unanswered attention still exists / is done | `<home>/task-board/ledger-v2.json`; unreadable ⇒ **nothing is dropped** |
+| `ROUTER_BOARD_HEADERS` | JSON object of extra headers for the board state endpoint (this tool **never guesses** private header names) | none |
+| `ROUTER_LOG_DIR` | conclusions-log directory (default `<working dir>/docs/year-rings`) | see left |
+
 ---
 
 ## The three checks
@@ -255,6 +304,11 @@ node router-guard.mjs --router-cwd <...> --json                    # machine-rea
 - **Fail-open**: unreadable `workspace.json` = environment not ready ⇒ exit code **3** (schedulers usually
   treat 3 as "yield this round, not a failure"). "Has alarms" is not a script failure ⇒ still 0.
 - Single-instance lock with ttl self-healing: a manual run and a scheduled run yield to each other.
+- **Read-back after a write is retried (settle)**: the RPC returns before `workspace.json` is flushed, so an
+  immediate read-back raises a false alarm (waits up to 8×250ms).
+- This piece ships **three** checks. The production variant has five; the other two (session-identity drift /
+  inbound-channel "bot ready") inspect **deployment facts of one specific integration** (a concrete platform
+  appId plus a local log directory) ⇒ not shipped here, with the reasoning in the `router-guard.mjs` header.
 
 ---
 
@@ -349,6 +403,11 @@ compare as sets.
   audit trail, contradicting the "one line per action" selling point). Archive by year.
 - **Same line, same day, changed conclusion is skipped by idempotency**: that key is a **dedupe key**, not
   an update key. Edit the file by hand.
+- **`digest --auto` does not write opinions**: it takes card titles (the most recent `done` card; otherwise
+  「status word: most recent card」) — a **mechanical extraction**, zero model calls. For a real sentence, use
+  `--line` and write it yourself.
+- **Slots are a hard 16 lines**: when full it scrolls, and `--auto` prints which workstreams left the window
+  (no silent truncation). This is bookkeeping, not summarisation.
 - **`--json` fields are not a contract**: 0.x, fields are only added, never renamed — but do not build on
   them.
 - **Line count is not a criterion**: the value here is whether the shape is right, not how long it is.
