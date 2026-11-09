@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); this project uses 0.x semantics
 (minor bumps may break compatibility — see the note below).
 
+## 0.4.1
+
+Two small correctness fixes, both of which had been shipping wrong for several releases:
+
+* **The version string now follows `package.json`.** `router-act.mjs` and `router-guard.mjs` each used to
+  declare their own `VERSION` constant, so bumping the package left both still printing `0.3.0` at 0.4.0.
+  Both now read `package.json` at load time (one read, a fallback constant only if the file is missing),
+  so a release bump has a single place to touch.
+* **Bare `--help` exits 0.** `node router-act.mjs --help` (no verb) used to exit **2**, which reads as an
+  error to every wrapper and CI harness; it now exits 0 like the rest of the ecosystem. Asking for help is
+  success. Giving *neither* a verb nor `--help` still exits **2** — a missing verb is still an error.
+
 ## 0.4.0
 
 Three new surfaces — none of them existed in this repo before, all three had been running on a live

@@ -39,7 +39,15 @@ import { acquireTickLock, releaseTickLock, writeJsonAtomic, readJsonSafe } from 
 import { readSessionHeader, findSessionFile } from './lib/session-header.mjs';
 import { alert } from './lib/alert.mjs';
 
-export const VERSION = '0.3.0';   // 与包版本同线（0.1.1 → 0.3.0：只做版本对齐 + 回读 settle 对齐，判据不变）
+/** 版本串 = **运行时读 `package.json`**（模块加载时读一次）；兜底只在读不到时生效。
+ *  历史：0.1.1 → 0.3.0 只做版本对齐 + 回读 settle 对齐，判据不变。 */
+function readPkgVersion(fallback) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+    return (typeof pkg.version === 'string' && pkg.version) ? pkg.version : fallback;
+  } catch { return fallback; }
+}
+export const VERSION = readPkgVersion('0.4.1');
 const ARGV = process.argv.slice(2);
 const has = (f) => ARGV.includes(f);
 const val = (f, d) => { const i = ARGV.indexOf(f); return i >= 0 ? ARGV[i + 1] : d; };

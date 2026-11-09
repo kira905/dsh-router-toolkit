@@ -56,7 +56,18 @@ import { VERB_USAGE, scanFlags, renderUnknownFlags } from './lib/flags.mjs';
 import { makeResolver } from './lib/config.mjs';
 import { buildVisionGaps, renderVisionGaps, computeVisionGaps, readOwnerPriorityItems, ownerPriorityHit } from './lib/vision-gaps.mjs';
 
-export const VERSION = '0.3.0';
+/**
+ * 版本串 = **运行时读 `package.json`**（模块加载时读一次）。
+ * 以前两处各写一个 `VERSION` 常数 ⇒ 升版必漏一处（0.4.0 时两件都还印 0.3.0）。
+ * 兜底常数只在 `package.json` 读不到（被裁剪/损坏）时生效，正常路径永不使用。
+ */
+function readPkgVersion(fallback) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+    return (typeof pkg.version === 'string' && pkg.version) ? pkg.version : fallback;
+  } catch { return fallback; }
+}
+export const VERSION = readPkgVersion('0.4.1');
 const BASE = (process.env.DSH_WEB_URL ?? 'http://127.0.0.1:3080').replace(/\/+$/, '');
 const HOME = resolveHome(process.env.ROUTER_HOME);
 const OPS_FILE = process.env.ROUTER_OPS_FILE || path.join(HOME, 'router-ops.jsonl');
@@ -1118,7 +1129,9 @@ export async function main(argv) {
   const rest = argv.filter((a) => a !== verb);
   if (!verb || argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(`${verb && VERB_USAGE[verb] ? `${VERB_USAGE[verb]}\n\n` : ''}${USAGE}\n`);
-    return verb ? 0 : 2;
+    // 显式要 help ⇒ 0（与全生态一致：`--help` 是成功）；什么都没给 ⇒ 2（缺动词是错）。
+    const wantsHelp = argv.includes('--help') || argv.includes('-h');
+    return wantsHelp ? 0 : 2;
   }
   if (!VERBS.includes(verb)) { process.stderr.write(`❌ 未知动词 "${verb}"。白名单：${VERBS.join(' / ')}\n`); return 2; }
   // 🔴 参数白名单：未知 flag ⇒ rc=2，且在**任何副作用之前**就拒（写动词带 --apply 也一样拦）

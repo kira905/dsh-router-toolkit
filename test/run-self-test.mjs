@@ -180,8 +180,10 @@ function run(script, args, extraEnv = {}) {
     ...extraEnv,
   };
   for (const k of Object.keys(extraEnv)) if (extraEnv[k] === null) delete env[k];
+  // script 可以给绝对路径（J-extra3 的「版本跟随 package.json」灵敏度自证要跑一份临时副本）
+  const scriptPath = path.isAbsolute(script) ? script : path.join(REPO, script);
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(REPO, script), ...args], { env });
+    const child = spawn(process.execPath, [scriptPath, ...args], { env });
     let out = '', err = '';
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { err += c; });
@@ -324,7 +326,7 @@ async function main() {
       `unknown-verb rc=${bad.rc} · 缺 --card rc=${noCard.rc} · 越界 --cmd rc=${badCmd.rc} · 越界 --prio rc=${badPrio.rc}`);
   }
 
-  // ── 每个动词 --help 都是用法、不写盘 ──────────────────────────────────────
+  // ── 每个动词 --help 都是用法、不写盘；**裸 --help** 也是 0；版本串跟随 package.json ──────
   {
     const nOpsBefore = opsCount();
     const rows = [];
@@ -335,6 +337,49 @@ async function main() {
     const g = await run('router-guard.mjs', ['--help']);
     const ok = rows.every((x) => x.endsWith(':0')) && g.rc === 0 && opsCount() === nOpsBefore;
     check('J-extra3', '逐动词 --help rc=0 且不写盘', ok, `${rows.join(' ')} · guard:${g.rc} · 流水无新增=${opsCount() === nOpsBefore}`);
+  }
+
+  // ── 裸 --help（无动词）rc=0 + 首行版本 == package.json 的 version + 灵敏度自证 ──────────
+  // 🔴 这一条以前**从来没测过**：上面 J-extra3 只覆盖了带动词的 `router-act.mjs <verb> --help`
+  //    （走 `verb ? 0 : 2` 的 0 分支）与本来就是 0 的 `router-guard.mjs --help`，
+  //    所以裸 `router-act.mjs --help` 一直是 rc=2 也没人发现。版本串同理：两处各写死
+  //    `VERSION = '0.3.0'`，0.4.0 时两件都还印 0.3.0，夹具也只比 "rc" 不比版本串。
+  {
+    const PKG = path.join(REPO, 'package.json');
+    const PKG_VERSION = JSON.parse(fs.readFileSync(PKG, 'utf8')).version;
+    const firstLine = (r) => (r.out || '').split('\n')[0] ?? '';
+
+    // ① 裸 --help（没有动词）⇒ rc=0；裸跑（既没动词也没 --help）⇒ 仍是 2（缺动词是错，不许松动）
+    const bareHelp = await run('router-act.mjs', ['--help']);
+    const bareHelpH = await run('router-act.mjs', ['-h']);
+    const nothing = await run('router-act.mjs', []);
+    // ② 两个 bin 的 --help 首行版本号 == package.json 的 version（读文件比，不写死字符串）
+    const actHelp = await run('router-act.mjs', ['--help']);
+    const guardHelp = await run('router-guard.mjs', ['--help']);
+    const verOf = (r) => (firstLine(r).match(/\bv(\d+\.\d+\.\d+[\w.-]*)/) ?? [])[1] ?? null;
+    const versionsMatch = verOf(actHelp) === PKG_VERSION && verOf(guardHelp) === PKG_VERSION;
+
+    // ③ 灵敏度自证：把 package.json 的 version 在**临时副本目录**里改成假号，
+    //    副本跑 --help 的版本必须跟着变 ⇒ 证明不是又写死了一处（真 package.json 一个字节都不动）。
+    const FAKE_VERSION = '9.9.9-fixture';
+    const fakeRoot = path.join(ROOT, 'fake-pkg');
+    fs.mkdirSync(fakeRoot, { recursive: true });
+    fs.cpSync(path.join(REPO, 'lib'), path.join(fakeRoot, 'lib'), { recursive: true });
+    for (const f of ['router-act.mjs', 'router-guard.mjs']) fs.copyFileSync(path.join(REPO, f), path.join(fakeRoot, f));
+    fs.writeFileSync(path.join(fakeRoot, 'package.json'), `${JSON.stringify({ name: 'fake-fixture', version: FAKE_VERSION }, null, 2)}\n`, 'utf8');
+    const fakeAct = await run(path.join(fakeRoot, 'router-act.mjs'), ['--help']);
+    const fakeGuard = await run(path.join(fakeRoot, 'router-guard.mjs'), ['--help']);
+    const follows = verOf(fakeAct) === FAKE_VERSION && verOf(fakeGuard) === FAKE_VERSION;
+    const pkgUntouched = JSON.parse(fs.readFileSync(PKG, 'utf8')).version === PKG_VERSION;
+
+    const ok = bareHelp.rc === 0 && bareHelpH.rc === 0 && nothing.rc === 2
+      && versionsMatch && follows && pkgUntouched
+      && fakeAct.rc === 0 && fakeGuard.rc === 0;
+    check('J-extra5', '裸 --help rc=0（以前没测 ⇒ 2 溜过去）+ --help 版本跟随 package.json（含灵敏度自证）', ok,
+      `裸--help rc=${bareHelp.rc} / -h rc=${bareHelpH.rc}（期望 0）· 裸跑 rc=${nothing.rc}（期望 2）`
+      + ` · 帮助版本 act=${verOf(actHelp)} guard=${verOf(guardHelp)} vs pkg=${PKG_VERSION}（一致=${versionsMatch}）`
+      + ` · 灵敏度：改副本 pkg → ${FAKE_VERSION}，help 跟着变 act=${verOf(fakeAct)} guard=${verOf(fakeGuard)}（${follows}）`
+      + ` · 真 pkg 未动=${pkgUntouched}`);
   }
 
   // ── R-3：未知 flag 一律 fail-closed（写动词带 --apply 也拦）───────────────
