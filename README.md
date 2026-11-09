@@ -20,6 +20,15 @@
 > 0.4.0 起再加三件**上游本来就在跑、此前不在本仓**的新增面（`router-lazy` / `yearring-index` / 可选插件），
 > 它们不在上面那 2,525 行里。
 
+> ### 一条命令跑起来
+> ```bash
+> git clone https://github.com/kira905/dsh-router-toolkit
+> cd dsh-router-toolkit
+> node router-act.mjs --help     # 只看用法，不碰任何东西
+> ```
+> 本仓零第三方依赖 —— **CLI 不用 `npm install`**：拉下来直接用 `node` 跑就是全部安装步骤。
+> 要真读车况得先备好 `/api` cookie 密钥，见下面「装上它」；装成包 / 挂插件见「可选插件」一节。
+
 > ### 它不附带什么（先看清楚，省得装完失望）
 >
 > 这套开源出来的是**能用的工具 + 装完自检 + 设计文档**。有两块**不在开源范围里**：
@@ -350,7 +359,7 @@ node yearring-index.mjs --dir ./docs/vision
 npm i @kira905/dsh-router-toolkit
 ```
 
-组合里挂上（`cordis.patch.yml` / `dsh.profile.bundles`）：
+组合里挂上（`cordis.patch.yml` = DSH 读的插件挂载清单 / `dsh.profile.bundles` = profile 自己的「启动时自动挂我」清单）：
 
 ```yaml
 - id: dsh-router-reset-btn
